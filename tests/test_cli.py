@@ -1,0 +1,104 @@
+import json
+
+import pytest
+
+from fakes import FakeDetector
+from tracker.cli import main
+
+BOX = [10.0, 10.0, 30.0, 40.0]
+GT_ROWS = [(f, 1, 10, 10, 20, 30) for f in (1, 2, 3)]
+
+
+def fake_detector(threshold):
+    detector = FakeDetector([BOX])
+    detector.threshold = threshold
+    return detector
+
+
+@pytest.fixture
+def dataset(make_sequence, tmp_path):
+    """Seven clips from four games, in the dataset's folder layout."""
+    root = tmp_path / "ds"
+    names = ["A_001", "A_002", "B_001", "B_002", "C_001", "C_002", "D_001"]
+    for name in names:
+        make_sequence(name=name, n_frames=3, gt_rows=GT_ROWS,
+                      parent=root / "mot-challenge-format" / "train")
+    return root
+
+
+def test_split_writes_a_file_with_whole_games(dataset, tmp_path):
+    out = tmp_path / "splits" / "heldout.json"
+    assert main(["split", "--dataset", str(dataset), "--out", str(out), "--heldout", "2"]) == 0
+    split = json.loads(out.read_text())
+    assert len(split["heldout"]) == 2
+    assert len(split["heldout"]) + len(split["train"]) == 7
+    assert len({name.split("_")[0] for name in split["heldout"]}) == 1
+
+
+def test_run_then_score_on_the_heldout_clips(dataset, tmp_path, capsys):
+    split = tmp_path / "heldout.json"
+    run_dir = tmp_path / "run"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    code = main(
+        ["run", "--out", str(run_dir), "--dataset", str(dataset), "--split", str(split), "--no-overlay"],
+        make_detector=fake_detector,
+    )
+    assert code == 0
+    recorded = json.loads((run_dir / "run.json").read_text())
+    assert recorded["run"]["detector"] == "fake-detector"
+    assert sorted(recorded["clips"]) == sorted(json.loads(split.read_text())["heldout"])
+
+    assert main(["score", "--run", str(run_dir), "--dataset", str(dataset), "--split", str(split)]) == 0
+    card = json.loads((run_dir / "scorecard.json").read_text())
+    # Real ByteTrack confirms a track on a clip's second frame, so 2 of the 3 frames
+    # are tracked: IDF1 = 2 * 2 / (3 + 2) = 0.8 per clip and pooled.
+    assert card["tracking"]["overall"]["idf1"] == pytest.approx(0.8)
+    assert card["run"]["detector"] == "fake-detector"
+    assert "IDF1 80.0%" in capsys.readouterr().out
+
+
+def test_run_on_named_clips_and_a_threshold(dataset, tmp_path):
+    run_dir = tmp_path / "run"
+    clip = dataset / "mot-challenge-format" / "train" / "A_001"
+    code = main(
+        ["run", "--out", str(run_dir), "--clip", str(clip), "--threshold", "0.3", "--no-overlay"],
+        make_detector=fake_detector,
+    )
+    assert code == 0
+    assert json.loads((run_dir / "run.json").read_text())["run"]["detector_threshold"] == 0.3
+    assert (run_dir / "A_001" / "tracks.parquet").exists()
+
+
+def test_run_reports_failure_with_a_nonzero_exit(dataset, tmp_path, capsys):
+    clip = dataset / "mot-challenge-format" / "train" / "A_001"
+    (clip / "img1" / "000002.jpg").write_bytes(b"not a jpeg")
+    code = main(
+        ["run", "--out", str(tmp_path / "run"), "--clip", str(clip), "--no-overlay"],
+        make_detector=fake_detector,
+    )
+    assert code == 1
+    assert "FAILED" in capsys.readouterr().out
+
+
+def test_run_without_clips_or_a_dataset_is_a_usage_error(tmp_path, capsys):
+    assert main(["run", "--out", str(tmp_path / "run")], make_detector=fake_detector) == 2
+    assert "--clip" in capsys.readouterr().err
+
+
+def test_run_with_a_split_naming_an_unknown_clip_is_an_error(dataset, tmp_path, capsys):
+    split = tmp_path / "heldout.json"
+    split.write_text(json.dumps({"seed": 1, "heldout": ["Z_009"], "train": []}))
+    code = main(
+        ["run", "--out", str(tmp_path / "run"), "--dataset", str(dataset), "--split", str(split)],
+        make_detector=fake_detector,
+    )
+    assert code == 2
+    assert "Z_009" in capsys.readouterr().err
+
+
+def test_score_with_nothing_scored_exits_nonzero(dataset, tmp_path):
+    split = tmp_path / "heldout.json"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    code = main(["score", "--run", str(tmp_path / "empty-run"), "--dataset", str(dataset), "--split", str(split)])
+    assert code == 1
+    assert (tmp_path / "empty-run" / "scorecard.md").exists()
