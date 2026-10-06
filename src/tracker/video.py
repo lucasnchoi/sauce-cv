@@ -79,8 +79,12 @@ class Clip:
                 raise ClipError(f"clip '{name}': could not open video {path}")
             width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            n_frames = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
             found_fps = capture.get(cv2.CAP_PROP_FPS) or None
+            # The container's frame count over-reports on real files (2657 stated,
+            # 2644 decodable), so count what decodes; frames() keeps the early-end check.
+            n_frames = 0
+            while capture.read()[0]:
+                n_frames += 1
             capture.release()
             self._video_path = path
 

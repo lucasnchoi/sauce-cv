@@ -80,6 +80,16 @@ def test_run_reports_failure_with_a_nonzero_exit(dataset, tmp_path, capsys):
     assert "FAILED" in capsys.readouterr().out
 
 
+def test_run_json_with_the_detector_is_written_even_when_every_clip_fails(dataset, tmp_path):
+    clip = dataset / "mot-challenge-format" / "train" / "A_001"
+    (clip / "img1" / "000002.jpg").write_bytes(b"not a jpeg")
+    run_dir = tmp_path / "run"
+    main(["run", "--out", str(run_dir), "--clip", str(clip), "--no-overlay"], make_detector=fake_detector)
+    recorded = json.loads((run_dir / "run.json").read_text())
+    assert recorded["run"]["detector"] == "fake-detector"
+    assert list(recorded["clips"]) == ["A_001"] and recorded["clips"]["A_001"] is not None
+
+
 def test_run_without_clips_or_a_dataset_is_a_usage_error(tmp_path, capsys):
     assert main(["run", "--out", str(tmp_path / "run")], make_detector=fake_detector) == 2
     assert "--clip" in capsys.readouterr().err

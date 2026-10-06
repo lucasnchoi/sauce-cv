@@ -29,6 +29,14 @@ def test_each_clip_is_reported_with_its_own_verdict():
     assert per_clip["B_001"]["meets_bar"] is False
 
 
+def test_an_idf1_of_exactly_the_bar_meets_it():
+    exact = TrackingCounts(idtp=85, n_gt=100, n_pred=100, tp=90)   # idf1 = 2 * 85 / 200 = 0.85
+    card = build_scorecard({"A_001": exact}, failed={}, run={})
+    assert card["tracking"]["per_clip"]["A_001"]["idf1"] == 0.85
+    assert card["tracking"]["per_clip"]["A_001"]["meets_bar"] is True
+    assert card["tracking"]["overall"]["meets_bar"] is True
+
+
 def test_failed_clips_are_listed_and_do_not_count():
     card = build_scorecard({"A_001": GOOD}, failed={"B_001": "stage 'detect and track' failed"}, run={})
     assert card["failed_clips"] == {"B_001": "stage 'detect and track' failed"}

@@ -98,6 +98,10 @@ def validate(df: pl.DataFrame, table: str) -> pl.DataFrame:
         nulls = df[column].null_count()
         if nulls:
             raise SchemaError(f"table '{table}': column '{column}' has {nulls} null values")
+        if df.schema[column] == pl.Float64:
+            nans = df[column].is_nan().sum()
+            if nans:
+                raise SchemaError(f"table '{table}': column '{column}' has {nans} NaN values")
     for column, allowed in ALLOWED_VALUES.get(table, {}).items():
         bad = (
             df.filter(pl.col(column).is_not_null() & ~pl.col(column).is_in(sorted(allowed)))

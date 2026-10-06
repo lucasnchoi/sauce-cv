@@ -72,10 +72,12 @@ def _run(args, make_detector) -> int:
         from tracker.stages.detect_track import RfDetrPersonDetector as make_detector
     detector = make_detector(args.threshold)
     details = run_details(detector)
-    results = run_many(clip_paths, args.out, detector, fps=args.fps, overlay=not args.no_overlay)
-
+    # Written first so a run killed part-way still leaves the run details behind.
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "run.json").write_text(json.dumps({"run": details, "clips": results}, indent=2) + "\n")
+    run_file = args.out / "run.json"
+    run_file.write_text(json.dumps({"run": details, "clips": {}}, indent=2) + "\n")
+    results = run_many(clip_paths, args.out, detector, fps=args.fps, overlay=not args.no_overlay)
+    run_file.write_text(json.dumps({"run": details, "clips": results}, indent=2) + "\n")
     for clip, error in results.items():
         print(f"{clip}: {'ok' if error is None else 'FAILED: ' + error}")
     return 1 if any(error is not None for error in results.values()) else 0

@@ -108,6 +108,53 @@ def test_one_box_cannot_match_two_ground_truth_boxes_in_a_frame():
     assert counts.tp == 1 and counts.fn == 1
 
 
+def test_track_pairing_is_optimal_not_greedy():
+    # GT1 is BOX_A in frames 0-4; GT2 is BOX_B in frames 3-4.
+    # P10 is BOX_A in frames 0-2 and BOX_B in frames 3-4; P11 is BOX_A in frames 3-4.
+    # Overlap frames: GT1-P10 3 (0,1,2), GT1-P11 2 (3,4), GT2-P10 2 (3,4).
+    # Greedy by largest takes GT1-P10 = 3 and leaves GT2 nothing: idtp 3.
+    # Optimal takes GT1-P11 + GT2-P10 = 2 + 2: idtp 4.
+    gt = tracks([(f, 1, BOX_A) for f in range(5)] + [(f, 2, BOX_B) for f in (3, 4)])
+    pred = tracks(
+        [(f, 10, BOX_A) for f in (0, 1, 2)] + [(f, 10, BOX_B) for f in (3, 4)]
+        + [(f, 11, BOX_A) for f in (3, 4)]
+    )
+    counts = score_tracking(gt, pred)
+    assert counts == TrackingCounts(idtp=4, n_gt=7, n_pred=7, tp=7)
+    assert counts.idf1 == pytest.approx(2 * 4 / (7 + 7))
+
+
+def test_frame_matching_is_optimal_not_greedy():
+    # GT A = (0,0,10,10), A' = (0,3,10,10). P = (0,0,10,9), Q = (0,0,10,6).
+    # P-A: 90/100 = 0.9.  P-A': inter 60, union 90+70-60 = 100, 0.6.
+    # Q-A: 60/100 = 0.6.  Q-A': inter 30, union 60+70-30 = 100, 0.3 (no overlap).
+    # Greedy by IoU takes P-A (0.9) and Q has nothing left: tp 1.
+    # Optimal takes P-A' and Q-A: tp 2.
+    gt = tracks([(0, 1, (0.0, 0.0, 10.0, 10.0)), (0, 2, (0.0, 3.0, 10.0, 10.0))])
+    pred = tracks([(0, 7, (0.0, 0.0, 10.0, 9.0)), (0, 8, (0.0, 0.0, 10.0, 6.0))])
+    counts = score_tracking(gt, pred)
+    assert counts.tp == 2 and counts.fn == 0 and counts.fp == 0
+
+
+def test_overlap_exactly_at_the_threshold_counts():
+    # (0,0,10,10) vs (0,0,10,5): inter 50, union 100, IoU exactly 0.5.
+    gt = tracks([(0, 1, (0.0, 0.0, 10.0, 10.0))])
+    pred = tracks([(0, 7, (0.0, 0.0, 10.0, 5.0))])
+    assert score_tracking(gt, pred).tp == 1
+
+
+def test_a_non_default_threshold_is_used():
+    # (0,0,10,10) vs (0,0,10,9): IoU 0.9, so it counts at 0.5 but not at 0.95.
+    gt = tracks([(0, 1, (0.0, 0.0, 10.0, 10.0))])
+    pred = tracks([(0, 7, (0.0, 0.0, 10.0, 9.0))])
+    assert score_tracking(gt, pred, iou_threshold=0.95).tp == 0
+    assert score_tracking(gt, pred, iou_threshold=0.85).tp == 1
+    # IoU 1/3 fails the default 0.5 but counts at 0.3.
+    third = tracks([(0, 7, (5.0, 0.0, 15.0, 10.0))])
+    assert score_tracking(gt, third).tp == 0
+    assert score_tracking(gt, third, iou_threshold=0.3).tp == 1
+
+
 def test_no_predictions_scores_zero_without_error():
     gt = tracks([(f, 1, BOX_A) for f in range(4)])
     counts = score_tracking(gt, tracks([]))

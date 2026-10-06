@@ -45,6 +45,12 @@ def test_null_in_required_column_is_rejected():
         validate(df, "tracks")
 
 
+def test_nan_in_required_float_column_is_rejected():
+    df = from_rows("tracks", [{**TRACK_ROW, "x1": float("nan")}])
+    with pytest.raises(SchemaError, match="x1"):
+        validate(df, "tracks")
+
+
 def test_unknown_table_is_rejected():
     with pytest.raises(SchemaError, match="nonsense"):
         validate(pl.DataFrame(), "nonsense")

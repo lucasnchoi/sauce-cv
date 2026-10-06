@@ -1,5 +1,3 @@
-import dataclasses
-
 import cv2
 import numpy as np
 import pytest
@@ -74,17 +72,63 @@ def test_video_file_is_read(tmp_path):
     assert [index for index, _ in clip.frames()] == [0, 1, 2, 3, 4, 5]
 
 
-def test_video_file_ending_early_raises_clip_error(tmp_path):
-    """When a video stream ends before info.n_frames, raise ClipError."""
-    path = tmp_path / "truncated.mp4"
+def _write_video(path, n_frames):
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
-    for i in range(6):
+    for i in range(n_frames):
         writer.write(np.full((48, 64, 3), 30 * i, dtype=np.uint8))
     writer.release()
+
+
+def test_video_frame_count_is_what_decodes_not_what_the_container_states(tmp_path, monkeypatch):
+    """Real files state more frames than they hold (2657 stated, 2644 decoded)."""
+    path = tmp_path / "overstated.mp4"
+    _write_video(path, 6)
+
+    real_capture = cv2.VideoCapture
+
+    class OverReporting:
+        def __init__(self, filename):
+            self._capture = real_capture(filename)
+
+        def get(self, prop):
+            value = self._capture.get(prop)
+            return value + 7 if prop == cv2.CAP_PROP_FRAME_COUNT else value
+
+        def __getattr__(self, name):
+            return getattr(self._capture, name)
+
+    monkeypatch.setattr(cv2, "VideoCapture", OverReporting)
+    assert OverReporting(str(path)).get(cv2.CAP_PROP_FRAME_COUNT) == 13   # 6 written + 7
     clip = Clip(path)
-    # Simulate a truncated video by overriding the expected frame count
-    clip.info = dataclasses.replace(clip.info, n_frames=10)
-    with pytest.raises(ClipError, match=r"truncated.*frame 6.*10 frames"):
+    assert clip.info.n_frames == 6
+    assert [index for index, _ in clip.frames()] == [0, 1, 2, 3, 4, 5]
+
+
+def test_video_decoder_failing_mid_stream_raises_clip_error(tmp_path, monkeypatch):
+    """The count pass succeeds; a later pass that stops after 3 frames is an error."""
+    path = tmp_path / "flaky.mp4"
+    _write_video(path, 6)
+    clip = Clip(path)
+    assert clip.info.n_frames == 6
+
+    real_capture = cv2.VideoCapture
+
+    class FailsAfterThree:
+        def __init__(self, filename):
+            self._capture = real_capture(filename)
+            self._reads = 0
+
+        def read(self):
+            if self._reads >= 3:
+                return False, None
+            self._reads += 1
+            return self._capture.read()
+
+        def __getattr__(self, name):
+            return getattr(self._capture, name)
+
+    monkeypatch.setattr(cv2, "VideoCapture", FailsAfterThree)
+    with pytest.raises(ClipError, match=r"flaky.*frame 3.*3 of 6 frames"):
         list(clip.frames())
 
 

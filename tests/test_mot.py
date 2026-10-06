@@ -33,6 +33,15 @@ def test_rows_flagged_to_ignore_are_dropped(make_sequence):
     assert load_mot_ground_truth(seq)["track_id"].to_list() == [1]
 
 
+def test_a_fractional_value_after_row_100_does_not_break_loading(make_sequence):
+    seq = make_sequence(gt_rows=[(f, 1, 10, 10, 20, 30) for f in range(1, 151)])
+    with (seq / "gt" / "gt.txt").open("a") as handle:
+        handle.write("151,1,10.5,10,20,30,1,1,1\n")    # first fractional value, row 151
+    df = load_mot_ground_truth(seq)
+    assert df.height == 151
+    assert df["x1"][150] == 10.5 and df["x2"][150] == 30.5
+
+
 def test_empty_annotation_file_gives_an_empty_table(make_sequence):
     seq = make_sequence(gt_rows=[])
     assert load_mot_ground_truth(seq).height == 0
