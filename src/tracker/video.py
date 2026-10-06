@@ -29,11 +29,17 @@ class ClipInfo:
     height: int
 
 
-def _seqinfo_fps(path: Path) -> float | None:
+def _seqinfo_fps(path: Path, clip_name: str) -> float | None:
+    """Read frameRate from seqinfo.ini, raising ClipError if malformed."""
     parser = configparser.ConfigParser()
-    parser.read(path)
-    if parser.has_option("Sequence", "frameRate"):
-        return parser.getfloat("Sequence", "frameRate")
+    try:
+        parser.read(path)
+        if parser.has_option("Sequence", "frameRate"):
+            return parser.getfloat("Sequence", "frameRate")
+    except (ValueError, configparser.Error) as e:
+        raise ClipError(
+            f"clip '{clip_name}': {path.name} is malformed: {e}"
+        )
     return None
 
 
@@ -60,8 +66,12 @@ class Clip:
                 )
             height, width = first.shape[:2]
             n_frames = len(self._images)
-            seqinfo = path / "seqinfo.ini"
-            found_fps = _seqinfo_fps(seqinfo) if seqinfo.is_file() else None
+            # Only read seqinfo if fps was not explicitly passed
+            found_fps = None
+            if fps is None:
+                seqinfo = path / "seqinfo.ini"
+                if seqinfo.is_file():
+                    found_fps = _seqinfo_fps(seqinfo, name)
         else:
             name = clip_id or path.stem
             capture = cv2.VideoCapture(str(path))
@@ -101,6 +111,12 @@ class Clip:
             while True:
                 ok, image = capture.read()
                 if not ok:
+                    # Check if stream ended before expected frame count
+                    if index < self.info.n_frames:
+                        raise ClipError(
+                            f"clip '{self.info.clip_id}': frame {index} could not be read "
+                            f"(video ended after {index} of {self.info.n_frames} frames)"
+                        )
                     break
                 yield index, image
                 index += 1

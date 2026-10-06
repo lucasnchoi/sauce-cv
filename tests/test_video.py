@@ -1,3 +1,5 @@
+import dataclasses
+
 import cv2
 import numpy as np
 import pytest
@@ -70,3 +72,47 @@ def test_video_file_is_read(tmp_path):
     assert clip.info.fps == pytest.approx(30.0, abs=0.5)
     assert (clip.info.width, clip.info.height) == (64, 48)
     assert [index for index, _ in clip.frames()] == [0, 1, 2, 3, 4, 5]
+
+
+def test_video_file_ending_early_raises_clip_error(tmp_path):
+    """When a video stream ends before info.n_frames, raise ClipError."""
+    path = tmp_path / "truncated.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
+    for i in range(6):
+        writer.write(np.full((48, 64, 3), 30 * i, dtype=np.uint8))
+    writer.release()
+    clip = Clip(path)
+    # Simulate a truncated video by overriding the expected frame count
+    clip.info = dataclasses.replace(clip.info, n_frames=10)
+    with pytest.raises(ClipError, match=r"truncated.*frame 6.*10 frames"):
+        list(clip.frames())
+
+
+def test_malformed_seqinfo_non_numeric_framerate(make_sequence):
+    """Non-numeric frameRate in seqinfo.ini raises ClipError."""
+    seq = make_sequence()
+    (seq / "seqinfo.ini").write_text(
+        "[Sequence]\n"
+        "name=TEST\n"
+        "frameRate=not_a_number\n"
+        "imDir=img1\n"
+    )
+    with pytest.raises(ClipError, match=r"GAME_A_001.*seqinfo.ini"):
+        Clip(seq)
+
+
+def test_malformed_seqinfo_no_section(make_sequence):
+    """seqinfo.ini with no section header raises ClipError."""
+    seq = make_sequence()
+    (seq / "seqinfo.ini").write_text("frameRate=30\n")
+    with pytest.raises(ClipError, match=r"GAME_A_001.*seqinfo.ini"):
+        Clip(seq)
+
+
+def test_malformed_seqinfo_with_explicit_fps_opens_fine(make_sequence):
+    """Malformed seqinfo.ini is ignored when fps is explicitly passed."""
+    seq = make_sequence()
+    (seq / "seqinfo.ini").write_text("frameRate=not_a_number\n")
+    clip = Clip(seq, fps=30)
+    assert clip.info.fps == 30.0
+    assert clip.info.clip_id == "GAME_A_001"
