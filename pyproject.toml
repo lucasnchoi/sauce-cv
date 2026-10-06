@@ -1,0 +1,34 @@
+[project]
+name = "hockey-tracker"
+version = "0.1.0"
+description = "Turns hockey broadcast video into player and puck tracking tables"
+requires-python = ">=3.11,<3.13"
+license = { text = "GPL-3.0-only" }
+dependencies = [
+    "numpy>=2.0.2",
+    "polars>=1.0",
+    "scipy>=1.13.1",
+    "opencv-python>=4.8.0",
+    "supervision>=0.29.0",
+    "trackers==2.6.1",
+    "rfdetr==1.11.2",
+]
+
+[project.scripts]
+tracker = "tracker.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tracker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = "-m 'not slow'"
+markers = ["slow: needs model weights or the downloaded dataset"]
