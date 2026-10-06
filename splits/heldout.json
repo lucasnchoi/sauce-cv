@@ -1,0 +1,29 @@
+{
+  "seed": 20261006,
+  "heldout": [
+    "CAR_VS_BOS_001",
+    "CAR_VS_BOS_002",
+    "CAR_VS_NYR_001",
+    "CAR_VS_NYR_002",
+    "CAR_VS_NYR_003"
+  ],
+  "train": [
+    "CGY_VS_DAL_001",
+    "CGY_VS_DAL_002",
+    "CGY_VS_DAL_003",
+    "CHI_VS_TOR_002",
+    "CHI_VS_TOR_003",
+    "CHI_VS_TOR_004",
+    "CNTRL_VS_PAC_001",
+    "CNTRL_VS_PAC_002",
+    "CNTRL_VS_PAC_005",
+    "CNTRL_VS_PAC_006",
+    "PIT_VS_SJ_001",
+    "PIT_VS_SJ_002",
+    "PIT_VS_SJ_003",
+    "PIT_VS_WAS_001",
+    "STL_VS_SJ_001",
+    "STL_VS_SJ_002",
+    "STL_VS_SJ_003"
+  ]
+}
