@@ -100,6 +100,8 @@ def test_render_draws_points_and_legend_highlights_the_current_keypoint():
     out = s.render(image)
     assert out.shape == image.shape and image.sum() == 0            # input untouched
     assert out[24, 32].tolist() != [0, 0, 0]
+    image[10, 8] = (7, 7, 7)
+    assert s.render(image)[10, 8].tolist() != [7, 7, 7]    # header sits on a dark box
     legend = s.legend()
     assert legend.ndim == 3 and legend.shape[2] == 3
 
@@ -128,3 +130,16 @@ def test_prelabels_fill_an_untouched_starting_frame():
     s.load_prelabels(pre)
     assert s.points[("A_001", 3)] == {0: (12.0, 34.0)}
     assert not s.is_labelled(("A_001", 3))
+
+
+def test_start_at_first_unlabelled_skips_labelled_frames_and_falls_back_to_zero():
+    s = fresh()
+    s.start_at_first_unlabelled()
+    assert s.index == 0
+    s.place(5.0, 5.0)
+    s.start_at_first_unlabelled()
+    assert s.index == 1
+    for _ in range(2):
+        s.jump_to(s.index); s.place(5.0, 5.0); s.next_frame()
+    s.start_at_first_unlabelled()
+    assert s.index == 0

@@ -69,6 +69,12 @@ class LabelSession:
         self.index = max(0, min(index, len(self.frames) - 1))
         self.keypoint = self._first_unset()
 
+    def start_at_first_unlabelled(self) -> None:
+        """Open at the first frame not yet labelled, or at position 0 when every frame is labelled."""
+        self.jump_to(0)
+        if self.is_labelled(self.current):
+            self.next_unlabelled()
+
     def next_frame(self) -> None:
         self.jump_to(self.index + 1)
 
@@ -136,6 +142,7 @@ class LabelSession:
     # -- drawing -----------------------------------------------------------------------------
     def render(self, image: np.ndarray) -> np.ndarray:
         out = image.copy()
+        cv2.rectangle(out, (0, 0), (min(out.shape[1], 460), 46), (0, 0, 0), -1)
         for k, p in self.current_points.items():
             if p is None:
                 continue
@@ -148,7 +155,7 @@ class LabelSession:
         name = KEYPOINTS[self.keypoint].name
         cv2.putText(out, f"{clip_id} f{frame}  [{self.index + 1}/{len(self.frames)}]  labelled {done}/{total}",
                     (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.putText(out, f"keypoint {self.keypoint}: {name}", (8, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+        cv2.putText(out, f"keypoint {self.keypoint}: {name}", (8, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1)
         return out
 
     def legend(self) -> np.ndarray:

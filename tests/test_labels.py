@@ -81,3 +81,9 @@ def test_build_frame_list_uses_training_clips_for_training_and_heldout_for_evalu
     path = tmp_path / "labels" / "rink_frames.json"
     save_frame_list(data, path)
     assert load_frame_list(path) == data and json.loads(path.read_text())["seed"] == 5
+
+
+def test_interleave_frames_goes_round_robin_across_clips():
+    from tracker.labels.rink_keypoints import interleave_frames
+    frames = [("A", 1), ("A", 5), ("B", 2), ("B", 9), ("C", 0), ("C", 3)]
+    assert interleave_frames(frames) == [("A", 1), ("B", 2), ("C", 0), ("A", 5), ("B", 9), ("C", 3)]

@@ -12,7 +12,7 @@ from tracker.analysis.box_offset import NTSC_RATIO, diagnose_clip, draw_comparis
 from tracker.analysis.tracker_grid import load_grid, one_factor_grid, run_grid
 from tracker.datasets.mot import list_sequences, load_mot_ground_truth
 from tracker.datasets.split import DEFAULT_SEED, choose_heldout, load_split, save_split
-from tracker.labels.rink_keypoints import build_frame_list, load_frame_list, load_labels, save_frame_list
+from tracker.labels.rink_keypoints import build_frame_list, interleave_frames, load_frame_list, load_labels, save_frame_list
 from tracker.labels.session import LabelSession
 from tracker.labels.tool import render_current, run_tool
 from tracker.evaluate.scorecard import build_scorecard, read_fps_by_clip, write_scorecard
@@ -92,7 +92,8 @@ def _parser() -> argparse.ArgumentParser:
     label.add_argument("--subset", choices=["training", "evaluation", "all"], default="training")
     label.add_argument("--prelabels", type=Path, help="a run folder holding <clip>/keypoints.parquet to pre-fill from")
     label.add_argument("--min-conf", type=float, default=0.5)
-    label.add_argument("--start", type=int, default=0, help="frame position to start at")
+    label.add_argument("--start", type=int, default=None,
+                       help="position in the displayed order, 0-based (default: the first unlabelled frame)")
     label.add_argument("--render-only", type=Path, help="write the current view to this image and exit (no window)")
     return parser
 
@@ -321,9 +322,9 @@ def _label_frames(args) -> int:
 def _label_rink(args) -> int:
     sequences = list_sequences(args.dataset)
     data = load_frame_list(args.frames)
-    frames = {"training": data["training"], "evaluation": data["evaluation"],
-              "all": data["training"] + data["evaluation"]}[args.subset]
-    frames = [(c, int(f)) for c, f in frames]
+    training = interleave_frames([(c, int(f)) for c, f in data["training"]])
+    evaluation = interleave_frames([(c, int(f)) for c, f in data["evaluation"]])
+    frames = {"training": training, "evaluation": evaluation, "all": training + evaluation}[args.subset]
     unknown = sorted({c for c, _ in frames} - set(sequences))
     if unknown:
         return _usage_error(f"frame list names clips that are not in the dataset: {unknown}")
@@ -333,7 +334,10 @@ def _label_rink(args) -> int:
             path = args.prelabels / clip_id / "keypoints.parquet"
             if path.is_file():
                 session.load_prelabels(read_table("keypoints", path), args.min_conf)
-    session.jump_to(args.start)
+    if args.start is None:
+        session.start_at_first_unlabelled()
+    else:
+        session.jump_to(args.start)
     if args.render_only:
         import cv2
         args.render_only.parent.mkdir(parents=True, exist_ok=True)

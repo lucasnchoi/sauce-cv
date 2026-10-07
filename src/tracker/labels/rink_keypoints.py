@@ -68,6 +68,17 @@ def labelled_frames(labels: pl.DataFrame) -> set[tuple[str, int]]:
     return {(c, int(f)) for c, f in labels.select("clip_id", "frame").unique().iter_rows()}
 
 
+def interleave_frames(frames: list[tuple[str, int]]) -> list[tuple[str, int]]:
+    """Round-robin across clips: every clip's first frame, then every clip's second, and so on."""
+    seen: dict[str, int] = {}
+    ranked = []
+    for clip_id, frame in frames:
+        rank = seen.get(clip_id, 0)
+        seen[clip_id] = rank + 1
+        ranked.append((rank, clip_id, frame))
+    return [(c, f) for _, c, f in sorted(ranked, key=lambda t: (t[0], t[1]))]
+
+
 def sample_frames(n_frames: int, count: int, seed: int, clip_id: str) -> list[int]:
     """One frame from each of `count` equal intervals, fixed by seed and clip id."""
     count = min(count, n_frames)

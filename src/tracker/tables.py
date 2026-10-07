@@ -1,6 +1,7 @@
 """Reads and writes pipeline tables as Parquet, validating on the way in and out."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import polars as pl
@@ -12,7 +13,9 @@ def write_table(df: pl.DataFrame, table: str, path: Path) -> None:
     validated = validate(df, table)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    validated.write_parquet(path)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    validated.write_parquet(temp)
+    os.replace(temp, path)
 
 
 def read_table(table: str, path: Path) -> pl.DataFrame:
