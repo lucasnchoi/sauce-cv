@@ -2,7 +2,8 @@ import pytest
 
 from fakes import FakeDetector, FakeTrackerFactory
 from tracker.pipeline import StageError, run_clip, run_details, run_many, score_run
-from tracker.tables import read_table
+from tracker.schemas import from_rows
+from tracker.tables import read_table, write_table
 
 BOX = [10.0, 10.0, 30.0, 40.0]
 GT_ROWS = [(f, 1, 10, 10, 20, 30) for f in (1, 2, 3)]      # same box as BOX, frames 1..3
@@ -172,3 +173,46 @@ def test_score_run_scores_at_three_thresholds(make_sequence, tmp_path):
     counts, failed = score_run(run_dir, {"GAME_A_001": scored}, ["GAME_A_001"])
     assert set(counts["GAME_A_001"]) == {0.5, 0.4, 0.3}
     assert counts["GAME_A_001"][0.5].idf1 == 1.0 and failed == {}
+
+
+def test_run_many_refuses_two_clips_with_the_same_id(make_sequence, tmp_path):
+    """Review Focus 5."""
+    a = make_sequence(name="002", parent=tmp_path / "A")
+    b = make_sequence(name="002", parent=tmp_path / "B")
+    with pytest.raises(ValueError, match=r"002.*A.*B|002.*B.*A"):
+        run_many([a, b], tmp_path / "run", FakeDetector([BOX]), FakeTrackerFactory())
+    assert not (tmp_path / "run").exists()
+
+
+def test_retrack_refuses_to_overwrite_its_source(make_sequence, tmp_path):
+    src = tmp_path / "src"
+    run_clip(make_sequence(n_frames=2), src, FakeDetector([BOX]), overlay=False)
+    with pytest.raises(ValueError, match="same folder"):
+        retrack_run(src, src, ByteTrackSettings())
+
+
+def test_retrack_fails_fast_on_a_corrupt_source_run_json(make_sequence, tmp_path):
+    src = tmp_path / "src"
+    run_clip(make_sequence(n_frames=2), src, FakeDetector([BOX]), overlay=False)
+    (src / "run.json").write_text("{not json")
+    with pytest.raises(ValueError, match="run.json"):
+        retrack_run(src, tmp_path / "out", ByteTrackSettings())
+    assert not (tmp_path / "out").exists()
+
+
+def test_retrack_carries_over_every_table_the_tracker_does_not_produce(make_sequence, tmp_path):
+    src = tmp_path / "src"
+    run_clip(make_sequence(name="GAME_A_001", n_frames=2), src, FakeDetector([BOX]), overlay=False)
+    extra = from_rows("keypoints", [{"clip_id": "GAME_A_001", "frame": 0, "keypoint_id": 10, "x_px": 1.0, "y_px": 2.0, "conf": 0.9}])
+    write_table(extra, "keypoints", src / "GAME_A_001" / "keypoints.parquet")
+    retrack_run(src, tmp_path / "out", ByteTrackSettings())
+    assert read_table("keypoints", tmp_path / "out" / "GAME_A_001" / "keypoints.parquet").height == 1
+
+
+def test_score_run_lists_a_corrupt_tracks_table_as_failed(make_sequence, tmp_path):
+    seq = make_sequence(name="GAME_A_001", n_frames=3, gt_rows=GT_ROWS)
+    run_dir = tmp_path / "run"
+    run_clip(seq, run_dir, FakeDetector([BOX]), FakeTrackerFactory(), overlay=False)
+    (run_dir / "GAME_A_001" / "tracks.parquet").write_bytes(b"garbage")
+    counts, failed = score_run(run_dir, {"GAME_A_001": seq}, ["GAME_A_001"])
+    assert counts == {} and "GAME_A_001" in failed

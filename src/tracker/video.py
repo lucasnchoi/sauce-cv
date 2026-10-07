@@ -86,6 +86,8 @@ class Clip:
             while capture.read()[0]:
                 n_frames += 1
             capture.release()
+            if n_frames == 0:
+                raise ClipError(f"clip '{name}': no frames could be decoded from {path}")
             self._video_path = path
 
         chosen_fps = fps if fps is not None else found_fps

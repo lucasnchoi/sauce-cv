@@ -6,6 +6,7 @@ clip stops that clip; other clips continue.
 from __future__ import annotations
 
 import json
+import shutil
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -56,16 +57,19 @@ def read_clip_info(path) -> ClipInfo:
     return ClipInfo(**json.loads(path.read_text()))
 
 
+def _clip_id_of(path: Path) -> str:
+    return path.name if path.is_dir() or not path.suffix else path.stem
+
+
 def run_clip(clip_path, run_dir, detector, tracker_factory=bytetrack_factory,
              fps: float | None = None, overlay: bool = True) -> str:
     clip_path = Path(clip_path)
-    fallback_id = clip_path.name if clip_path.is_dir() or not clip_path.suffix else clip_path.stem
+    fallback_id = _clip_id_of(clip_path)
     with _stage("open clip", fallback_id):
         clip = Clip(clip_path, fps=fps)
-    clip_id = clip.info.clip_id
-    out = Path(run_dir) / clip_id
-
-    write_clip_info(clip.info, out / "clip.json")
+        clip_id = clip.info.clip_id
+        out = Path(run_dir) / clip_id
+        write_clip_info(clip.info, out / "clip.json")
     with _stage("footage filter", clip_id):
         frames = passthrough_frames(clip.info)
         write_table(frames, "frames", out / "frames.parquet")
@@ -85,8 +89,15 @@ def run_clip(clip_path, run_dir, detector, tracker_factory=bytetrack_factory,
 
 def run_many(clip_paths, run_dir, detector, tracker_factory=bytetrack_factory,
              fps: float | None = None, overlay: bool = True) -> dict[str, str | None]:
+    paths = [Path(p) for p in clip_paths]
+    seen: dict[str, Path] = {}
+    for path in paths:
+        clip_id = _clip_id_of(path)
+        if clip_id in seen:
+            raise ValueError(f"two clips would share the id '{clip_id}': {seen[clip_id]} and {path}")
+        seen[clip_id] = path
     results: dict[str, str | None] = {}
-    for clip_path in clip_paths:
+    for clip_path in paths:
         try:
             results[run_clip(clip_path, run_dir, detector, tracker_factory, fps, overlay)] = None
         except StageError as error:
@@ -101,6 +112,13 @@ def retrack_run(src_run, out_run, settings: ByteTrackSettings) -> dict[str, str 
     from the tracker. No overlay is written.
     """
     src_run, out_run = Path(src_run), Path(out_run)
+    if src_run.resolve() == out_run.resolve():
+        raise ValueError(f"retrack output is the same folder as its source: {src_run}")
+    source_file = src_run / "run.json"
+    try:
+        details = json.loads(source_file.read_text())["run"] if source_file.is_file() else {}
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ValueError(f"cannot read {source_file}: {error}") from error
     factory = settings.factory()
     results: dict[str, str | None] = {}
     for clip_dir in sorted(p for p in src_run.iterdir() if p.is_dir()):
@@ -111,9 +129,10 @@ def retrack_run(src_run, out_run, settings: ByteTrackSettings) -> dict[str, str 
                 info = read_clip_info(clip_dir / "clip.json")
                 frames = read_table("frames", clip_dir / "frames.parquet")
                 detections = read_table("detections", clip_dir / "detections.parquet")
-            write_clip_info(info, out / "clip.json")
-            write_table(frames, "frames", out / "frames.parquet")
-            write_table(detections, "detections", out / "detections.parquet")
+                write_clip_info(info, out / "clip.json")
+                for table_file in sorted(clip_dir.glob("*.parquet")):
+                    if table_file.name not in ("tracks.parquet", "tracking.parquet"):
+                        shutil.copyfile(table_file, out / table_file.name)   # every table the tracker does not produce
             with _stage("track", clip_id):
                 tracks = run_track(detections, frames, info.fps, factory)
                 write_table(tracks, "tracks", out / "tracks.parquet")
@@ -123,8 +142,6 @@ def retrack_run(src_run, out_run, settings: ByteTrackSettings) -> dict[str, str 
         except StageError as error:
             results[clip_id] = str(error)
 
-    source_file = src_run / "run.json"
-    details = json.loads(source_file.read_text())["run"] if source_file.is_file() else {}
     earlier = details.get("tracker")                 # Plan 1 runs recorded a plain string here
     details["tracker"] = {**(earlier if isinstance(earlier, dict) else {}), "name": "bytetrack", "library": "trackers",
                           "settings": settings.as_dict(), "frame_rate": "set per clip"}

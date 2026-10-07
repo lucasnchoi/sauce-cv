@@ -188,3 +188,31 @@ def test_read_frame_from_a_video_file(tmp_path):
     assert clip.read_frame(5).mean() > clip.read_frame(1).mean()
     with pytest.raises(ClipError, match="frame 6"):
         clip.read_frame(6)
+
+
+def test_a_video_that_decodes_no_frames_is_an_error(tmp_path, monkeypatch):
+    path = tmp_path / "shift.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
+    writer.write(np.zeros((48, 64, 3), dtype=np.uint8))
+    writer.release()
+    real = cv2.VideoCapture
+
+    class NoFrames:
+        def __init__(self, *args):
+            self._capture = real(*args)
+
+        def isOpened(self):
+            return self._capture.isOpened()
+
+        def get(self, prop):
+            return self._capture.get(prop)
+
+        def release(self):
+            self._capture.release()
+
+        def read(self):
+            return False, None
+
+    monkeypatch.setattr(cv2, "VideoCapture", NoFrames)
+    with pytest.raises(ClipError, match="no frames could be decoded"):
+        Clip(path)
