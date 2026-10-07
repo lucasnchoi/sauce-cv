@@ -6,11 +6,16 @@ import json
 import sys
 from pathlib import Path
 
-from tracker.datasets.mot import list_sequences
+import numpy as np
+
+from tracker.analysis.box_offset import diagnose_clip, draw_comparison
+from tracker.datasets.mot import list_sequences, load_mot_ground_truth
 from tracker.datasets.split import DEFAULT_SEED, choose_heldout, load_split, save_split
 from tracker.evaluate.scorecard import build_scorecard, write_scorecard
 from tracker.pipeline import retrack_run, run_details, run_many, score_run
 from tracker.stages.detect_track import ByteTrackSettings
+from tracker.tables import read_table
+from tracker.video import Clip
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -47,6 +52,15 @@ def _parser() -> argparse.ArgumentParser:
     score.add_argument("--dataset", type=Path, required=True)
     score.add_argument("--split", type=Path, required=True)
     score.add_argument("--subset", choices=["heldout", "train"], default="heldout")
+
+    diagnose = commands.add_parser("diagnose-boxes", help="compare tracked boxes, raw detections and ground truth")
+    diagnose.add_argument("--run", type=Path, required=True)
+    diagnose.add_argument("--dataset", type=Path, required=True)
+    diagnose.add_argument("--split", type=Path, required=True)
+    diagnose.add_argument("--subset", choices=["heldout", "train"], default="heldout")
+    diagnose.add_argument("--out", type=Path, required=True)
+    diagnose.add_argument("--frames", type=int, default=10, help="comparison frames to draw per --draw clip")
+    diagnose.add_argument("--draw", action="append", default=[], metavar="CLIP_ID")
     return parser
 
 
@@ -120,6 +134,52 @@ def _retrack(args) -> int:
     return 1 if any(error is not None for error in results.values()) else 0
 
 
+def _diagnose(args) -> int:
+    sequences = list_sequences(args.dataset)
+    clip_ids = load_split(args.split)[args.subset]
+    args.out.mkdir(parents=True, exist_ok=True)
+    reports, failed = {}, {}
+    for clip_id in clip_ids:
+        if clip_id not in sequences:
+            failed[clip_id] = "no ground truth sequence with this name in the dataset"
+            continue
+        try:
+            reports[clip_id] = diagnose_clip(args.run, clip_id, sequences[clip_id])
+        except (FileNotFoundError, ValueError) as error:
+            failed[clip_id] = str(error)
+            continue
+        (args.out / f"{clip_id}.json").write_text(json.dumps(reports[clip_id], indent=2) + "\n")
+    lines = ["# Box diagnosis", "", f"Run: `{args.run}`", "",
+             "| Clip | fps | boxes | <0.1 | 0.1-0.3 | 0.3-0.5 | >=0.5 | med dx | med dy | med d_bottom | med w ratio | med h ratio | tracks==dets | IDF1@0.3 | @0.4 | @0.5 |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for clip_id, r in reports.items():
+        t, m, s = r["tracks"], r["tracks"]["matched_medians"], r["sweep"]
+        fmt = lambda v, f="{:.1f}": "—" if v is None else f.format(v)
+        lines.append(
+            f"| {clip_id} | {r['fps']:.0f} | {t['n_pred']} | " + " | ".join(f"{t['bin_share'][b]:.1%}" for b in ("<0.1", "0.1-0.3", "0.3-0.5", ">=0.5"))
+            + f" | {fmt(m['dx_centre'])} | {fmt(m['dy_centre'])} | {fmt(m['d_bottom'])} | {fmt(m['width_ratio'], '{:.2f}')} | {fmt(m['height_ratio'], '{:.2f}')}"
+            + f" | {fmt(r['tracks_vs_detections']['share_identical'], '{:.0%}')} | {s['0.3']['idf1']:.1%} | {s['0.4']['idf1']:.1%} | {s['0.5']['idf1']:.1%} |"
+        )
+    if failed:
+        lines += ["", "## Not diagnosed", ""] + [f"- {c}: {m}" for c, m in sorted(failed.items())]
+    (args.out / "summary.md").write_text("\n".join(lines) + "\n")
+
+    for clip_id in args.draw:
+        if clip_id not in reports:
+            print(f"{clip_id}: not drawn ({failed.get(clip_id, 'not in the subset')})")
+            continue
+        clip = Clip(sequences[clip_id])
+        tracks = read_table("tracks", args.run / clip_id / "tracks.parquet")
+        detections = read_table("detections", args.run / clip_id / "detections.parquet")
+        gt = load_mot_ground_truth(sequences[clip_id])
+        frames = sorted({int(round(x)) for x in np.linspace(0, clip.info.n_frames - 1, args.frames)})
+        for frame in frames:
+            draw_comparison(clip, frame, gt, tracks, detections, args.out / "frames" / clip_id / f"{frame:06d}.jpg")
+        print(f"{clip_id}: drew {len(frames)} frames under {args.out / 'frames' / clip_id}")
+    print(f"diagnosed {len(reports)} clips ({len(failed)} not); see {args.out / 'summary.md'}")
+    return 0 if reports else 1
+
+
 def _score(args) -> int:
     sequences = list_sequences(args.dataset)
     clip_ids = load_split(args.split)[args.subset]
@@ -148,6 +208,8 @@ def main(argv: list[str] | None = None, make_detector=None) -> int:
         return _run(args, make_detector)
     if args.command == "retrack":
         return _retrack(args)
+    if args.command == "diagnose-boxes":
+        return _diagnose(args)
     return _score(args)
 
 

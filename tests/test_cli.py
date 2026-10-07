@@ -146,3 +146,24 @@ def test_retrack_command_writes_a_new_run(dataset, tmp_path, capsys):
     recorded = json.loads((tmp_path / "out" / "run.json").read_text())["run"]
     assert recorded["tracker"]["settings"]["minimum_consecutive_frames"] == 1
     assert recorded["detector"] == "fake-detector"
+
+
+def test_diagnose_boxes_writes_json_per_clip_a_summary_and_frames(dataset, tmp_path):
+    split = tmp_path / "heldout.json"
+    run_dir = tmp_path / "run"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    main(["run", "--out", str(run_dir), "--dataset", str(dataset), "--split", str(split), "--no-overlay"],
+         make_detector=fake_detector)
+    held = json.loads(split.read_text())["heldout"]
+    out = tmp_path / "diag"
+    code = main(["diagnose-boxes", "--run", str(run_dir), "--dataset", str(dataset), "--split", str(split),
+                 "--out", str(out), "--frames", "2", "--draw", held[0]])
+    assert code == 0
+    report = json.loads((out / f"{held[0]}.json").read_text())
+    assert report["tracks"]["n_pred"] == 2                   # ByteTrack confirms on frame 1 of 3
+    agreement = report["tracks_vs_detections"]
+    assert agreement["n"] == 2 and 0.0 <= agreement["share_identical"] <= 1.0   # whether tracked boxes equal raw ones is Investigation 1's question, not this test's
+    assert "0.5" in report["sweep"]
+    text = (out / "summary.md").read_text()
+    assert held[0] in text and held[1] in text
+    assert len(list((out / "frames" / held[0]).glob("*.jpg"))) == 2
