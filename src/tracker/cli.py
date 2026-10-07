@@ -9,7 +9,8 @@ from pathlib import Path
 from tracker.datasets.mot import list_sequences
 from tracker.datasets.split import DEFAULT_SEED, choose_heldout, load_split, save_split
 from tracker.evaluate.scorecard import build_scorecard, write_scorecard
-from tracker.pipeline import run_details, run_many, score_run
+from tracker.pipeline import retrack_run, run_details, run_many, score_run
+from tracker.stages.detect_track import ByteTrackSettings
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -33,6 +34,13 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--threshold", type=float, default=0.5)
     run.add_argument("--fps", type=float)
     run.add_argument("--no-overlay", action="store_true")
+    run.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                     help="a ByteTrack setting, e.g. --set lost_track_buffer=60 (repeatable)")
+
+    retrack = commands.add_parser("retrack", help="re-link a finished run's detections with other tracker settings")
+    retrack.add_argument("--run", type=Path, required=True, help="a run that holds detections.parquet per clip")
+    retrack.add_argument("--out", type=Path, required=True)
+    retrack.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
 
     score = commands.add_parser("score", help="score a finished run against ground truth")
     score.add_argument("--run", type=Path, required=True)
@@ -45,6 +53,16 @@ def _parser() -> argparse.ArgumentParser:
 def _usage_error(message: str) -> int:
     print(f"tracker: {message}", file=sys.stderr)
     return 2
+
+
+def _settings(pairs: list[str]) -> ByteTrackSettings:
+    values = {}
+    for pair in pairs:
+        key, sep, value = pair.partition("=")
+        if not sep or not key:
+            raise ValueError(f"setting '{pair}' is not KEY=VALUE")
+        values[key] = value
+    return ByteTrackSettings.from_dict(values)
 
 
 def _split(args) -> int:
@@ -68,18 +86,37 @@ def _run(args, make_detector) -> int:
     else:
         return _usage_error("give --clip PATH, or both --dataset DIR and --split FILE")
 
+    try:
+        settings = _settings(args.set)
+    except ValueError as error:
+        return _usage_error(str(error))
+
     if make_detector is None:
         from tracker.stages.detect_track import RfDetrPersonDetector as make_detector
     detector = make_detector(args.threshold)
-    details = run_details(detector)
+    details = run_details(detector, settings)
     # Written first so a run killed part-way still leaves the run details behind.
     args.out.mkdir(parents=True, exist_ok=True)
     run_file = args.out / "run.json"
     run_file.write_text(json.dumps({"run": details, "clips": {}}, indent=2) + "\n")
-    results = run_many(clip_paths, args.out, detector, fps=args.fps, overlay=not args.no_overlay)
+    results = run_many(clip_paths, args.out, detector, settings.factory(), fps=args.fps, overlay=not args.no_overlay)
     run_file.write_text(json.dumps({"run": details, "clips": results}, indent=2) + "\n")
     for clip, error in results.items():
         print(f"{clip}: {'ok' if error is None else 'FAILED: ' + error}")
+    return 1 if any(error is not None for error in results.values()) else 0
+
+
+def _retrack(args) -> int:
+    try:
+        settings = _settings(args.set)
+    except ValueError as error:
+        return _usage_error(str(error))
+    if not args.run.is_dir():
+        return _usage_error(f"run folder not found: {args.run}")
+    results = retrack_run(args.run, args.out, settings)
+    for clip, error in results.items():
+        print(f"{clip}: {'ok' if error is None else 'FAILED: ' + error}")
+    print(f"tracker settings: {settings.label()}; see {args.out / 'run.json'}")
     return 1 if any(error is not None for error in results.values()) else 0
 
 
@@ -109,6 +146,8 @@ def main(argv: list[str] | None = None, make_detector=None) -> int:
         return _split(args)
     if args.command == "run":
         return _run(args, make_detector)
+    if args.command == "retrack":
+        return _retrack(args)
     return _score(args)
 
 

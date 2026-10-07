@@ -1,6 +1,7 @@
 """Stage 4: find people in each play frame and link them into tracks within a segment."""
 from __future__ import annotations
 
+from dataclasses import dataclass, fields
 from typing import Callable, Protocol
 
 import numpy as np
@@ -23,10 +24,58 @@ class Tracker(Protocol):
 TrackerFactory = Callable[[float], Tracker]
 
 
-def bytetrack_factory(fps: float) -> Tracker:
-    from trackers import ByteTrackTracker
+@dataclass(frozen=True)
+class ByteTrackSettings:
+    """The ByteTrack constructor settings this project exposes.
 
-    return ByteTrackTracker(frame_rate=fps)
+    Defaults are the library's (trackers 2.6.1), verified on 2026-10-07.
+    frame_rate is not a setting: it is always the clip's own rate.
+    """
+
+    lost_track_buffer: int = 30
+    track_activation_threshold: float = 0.7
+    minimum_consecutive_frames: int = 2
+    minimum_iou_threshold: float = 0.1
+    high_conf_det_threshold: float = 0.6
+
+    def as_dict(self) -> dict:
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
+    @classmethod
+    def from_dict(cls, values: dict) -> "ByteTrackSettings":
+        known = {f.name: f.type for f in fields(cls)}
+        unknown = sorted(set(values) - set(known))
+        if unknown:
+            raise ValueError(f"unknown ByteTrack settings {unknown}; known: {sorted(known)}")
+        casts = {"int": int, "float": float}
+        return cls(**{key: casts[known[key]](value) for key, value in values.items()})
+
+    def label(self) -> str:
+        defaults = ByteTrackSettings()
+        changed = [
+            f"{f.name}={getattr(self, f.name)}"
+            for f in fields(self)
+            if getattr(self, f.name) != getattr(defaults, f.name)
+        ]
+        return ",".join(changed) if changed else "baseline"
+
+    def factory(self) -> TrackerFactory:
+        settings = self.as_dict()
+
+        def make(fps: float) -> Tracker:
+            from trackers import ByteTrackTracker
+
+            return ByteTrackTracker(frame_rate=fps, **settings)
+
+        return make
+
+
+DEFAULT_BYTETRACK = ByteTrackSettings()
+
+
+def bytetrack_factory(fps: float) -> Tracker:
+    """ByteTrack with the project's default settings and the clip's frame rate."""
+    return DEFAULT_BYTETRACK.factory()(fps)
 
 
 class RfDetrPersonDetector:

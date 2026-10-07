@@ -102,3 +102,64 @@ def test_a_failing_detector_names_the_detect_stage(make_sequence, tmp_path):
 
     with pytest.raises(StageError, match=r"stage 'detect' failed on clip 'GAME_A_001'.*cuda fell over"):
         run_clip(make_sequence(name="GAME_A_001", n_frames=2), tmp_path / "run", Exploding(), FakeTrackerFactory())
+
+
+import json
+
+from tracker.pipeline import retrack_run
+from tracker.stages.detect_track import ByteTrackSettings
+
+
+def test_run_details_record_the_tracker_settings():
+    details = run_details(FakeDetector([BOX]), ByteTrackSettings(lost_track_buffer=5))
+    assert details["tracker"]["name"] == "bytetrack"
+    assert details["tracker"]["settings"]["lost_track_buffer"] == 5
+    assert run_details(FakeDetector([BOX]))["tracker"]["settings"]["lost_track_buffer"] == 30
+
+
+def test_retrack_reproduces_tracks_and_records_where_it_came_from(make_sequence, tmp_path):
+    seq = make_sequence(name="GAME_A_001", n_frames=6)
+    src = tmp_path / "src"
+    run_clip(seq, src, FakeDetector([BOX]), overlay=False)        # real ByteTrack, defaults
+    (src / "run.json").write_text(json.dumps({"run": {"detector": "fake-detector"}, "clips": {"GAME_A_001": None}}))
+    out = tmp_path / "out"
+    results = retrack_run(src, out, ByteTrackSettings())
+    assert results == {"GAME_A_001": None}
+    original = read_table("tracks", src / "GAME_A_001" / "tracks.parquet")
+    again = read_table("tracks", out / "GAME_A_001" / "tracks.parquet")
+    assert again.to_dicts() == original.to_dicts()                # Review Focus 2
+    assert read_table("tracking", out / "GAME_A_001" / "tracking.parquet").height == again.height
+    recorded = json.loads((out / "run.json").read_text())
+    assert recorded["run"]["detector"] == "fake-detector"
+    assert recorded["run"]["tracker"]["settings"]["lost_track_buffer"] == 30
+    assert recorded["run"]["retracked_from"] == str(src)
+    assert not (out / "GAME_A_001" / "overlay.mp4").exists()
+
+
+def test_retrack_with_other_settings_can_change_the_tracks(make_sequence, tmp_path):
+    seq = make_sequence(name="GAME_A_001", n_frames=6)
+    src = tmp_path / "src"
+    run_clip(seq, src, FakeDetector([BOX]), overlay=False)
+    retrack_run(src, tmp_path / "out", ByteTrackSettings(minimum_consecutive_frames=3))
+    # defaults confirm from frame 1 (5 rows of 6); requiring 3 confirms from frame 2 (4 rows)
+    assert read_table("tracks", src / "GAME_A_001" / "tracks.parquet").height == 5
+    assert read_table("tracks", tmp_path / "out" / "GAME_A_001" / "tracks.parquet").height == 4
+
+
+def test_retrack_skips_clip_folders_without_detections_and_reports_them(make_sequence, tmp_path):
+    seq = make_sequence(name="GAME_A_001", n_frames=3)
+    src = tmp_path / "src"
+    run_clip(seq, src, FakeDetector([BOX]), overlay=False)
+    (src / "GAME_B_001").mkdir()
+    results = retrack_run(src, tmp_path / "out", ByteTrackSettings())
+    assert results["GAME_A_001"] is None
+    assert "stage 'read cached run' failed on clip 'GAME_B_001'" in results["GAME_B_001"]
+
+
+def test_retrack_accepts_a_plan_1_run_json_whose_tracker_is_a_string(make_sequence, tmp_path):
+    src = tmp_path / "src"
+    run_clip(make_sequence(name="GAME_A_001", n_frames=3), src, FakeDetector([BOX]), overlay=False)
+    (src / "run.json").write_text(json.dumps({"run": {"tracker": "ByteTrack, default settings"}, "clips": {}}))
+    retrack_run(src, tmp_path / "out", ByteTrackSettings())
+    recorded = json.loads((tmp_path / "out" / "run.json").read_text())["run"]
+    assert recorded["tracker"]["settings"]["lost_track_buffer"] == 30

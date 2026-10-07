@@ -112,3 +112,37 @@ def test_score_with_nothing_scored_exits_nonzero(dataset, tmp_path):
     code = main(["score", "--run", str(tmp_path / "empty-run"), "--dataset", str(dataset), "--split", str(split)])
     assert code == 1
     assert (tmp_path / "empty-run" / "scorecard.md").exists()
+
+
+def test_run_accepts_tracker_settings_and_records_them(dataset, tmp_path):
+    run_dir = tmp_path / "run"
+    clip = dataset / "mot-challenge-format" / "train" / "A_001"
+    code = main(
+        ["run", "--out", str(run_dir), "--clip", str(clip), "--no-overlay",
+         "--set", "lost_track_buffer=12", "--set", "minimum_consecutive_frames=1"],
+        make_detector=fake_detector,
+    )
+    assert code == 0
+    recorded = json.loads((run_dir / "run.json").read_text())["run"]["tracker"]["settings"]
+    assert recorded["lost_track_buffer"] == 12 and recorded["minimum_consecutive_frames"] == 1
+
+
+def test_run_with_a_bad_setting_is_a_usage_error(dataset, tmp_path, capsys):
+    clip = dataset / "mot-challenge-format" / "train" / "A_001"
+    code = main(["run", "--out", str(tmp_path / "run"), "--clip", str(clip), "--set", "nope=1"],
+                make_detector=fake_detector)
+    assert code == 2
+    assert "nope" in capsys.readouterr().err
+
+
+def test_retrack_command_writes_a_new_run(dataset, tmp_path, capsys):
+    src = tmp_path / "src"
+    clip = dataset / "mot-challenge-format" / "train" / "A_001"
+    main(["run", "--out", str(src), "--clip", str(clip), "--no-overlay"], make_detector=fake_detector)
+    code = main(["retrack", "--run", str(src), "--out", str(tmp_path / "out"), "--set", "minimum_consecutive_frames=1"])
+    assert code == 0
+    assert (tmp_path / "out" / "A_001" / "tracks.parquet").exists()
+    assert "A_001: ok" in capsys.readouterr().out
+    recorded = json.loads((tmp_path / "out" / "run.json").read_text())["run"]
+    assert recorded["tracker"]["settings"]["minimum_consecutive_frames"] == 1
+    assert recorded["detector"] == "fake-detector"

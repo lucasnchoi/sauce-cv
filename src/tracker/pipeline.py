@@ -16,7 +16,7 @@ from tracker.datasets.mot import load_mot_ground_truth
 from tracker.evaluate.tracking import TrackingCounts, score_tracking
 from tracker.overlay import render_overlay
 from tracker.stages.assemble import assemble_tracking
-from tracker.stages.detect_track import bytetrack_factory, run_detect, run_track
+from tracker.stages.detect_track import DEFAULT_BYTETRACK, ByteTrackSettings, bytetrack_factory, run_detect, run_track
 from tracker.stages.footage_filter import passthrough_frames
 from tracker.tables import read_table, write_table
 from tracker.video import Clip, ClipInfo
@@ -92,7 +92,48 @@ def run_many(clip_paths, run_dir, detector, tracker_factory=bytetrack_factory,
     return results
 
 
-def run_details(detector) -> dict:
+def retrack_run(src_run, out_run, settings: ByteTrackSettings) -> dict[str, str | None]:
+    """Re-link the cached detections of a finished run under other tracker settings.
+
+    The detector is not run again, so every difference in the result comes
+    from the tracker. No overlay is written.
+    """
+    src_run, out_run = Path(src_run), Path(out_run)
+    factory = settings.factory()
+    results: dict[str, str | None] = {}
+    for clip_dir in sorted(p for p in src_run.iterdir() if p.is_dir()):
+        clip_id = clip_dir.name
+        out = out_run / clip_id
+        try:
+            with _stage("read cached run", clip_id):
+                info = read_clip_info(clip_dir / "clip.json")
+                frames = read_table("frames", clip_dir / "frames.parquet")
+                detections = read_table("detections", clip_dir / "detections.parquet")
+            write_clip_info(info, out / "clip.json")
+            write_table(frames, "frames", out / "frames.parquet")
+            write_table(detections, "detections", out / "detections.parquet")
+            with _stage("track", clip_id):
+                tracks = run_track(detections, frames, info.fps, factory)
+                write_table(tracks, "tracks", out / "tracks.parquet")
+            with _stage("assemble", clip_id):
+                write_table(assemble_tracking(tracks, info.fps), "tracking", out / "tracking.parquet")
+            results[clip_id] = None
+        except StageError as error:
+            results[clip_id] = str(error)
+
+    source_file = src_run / "run.json"
+    details = json.loads(source_file.read_text())["run"] if source_file.is_file() else {}
+    earlier = details.get("tracker")                 # Plan 1 runs recorded a plain string here
+    details["tracker"] = {**(earlier if isinstance(earlier, dict) else {}), "name": "bytetrack", "library": "trackers",
+                          "settings": settings.as_dict(), "frame_rate": "set per clip"}
+    details["retracked_from"] = str(src_run)
+    details["retracked_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    out_run.mkdir(parents=True, exist_ok=True)
+    (out_run / "run.json").write_text(json.dumps({"run": details, "clips": results}, indent=2) + "\n")
+    return results
+
+
+def run_details(detector, tracker_settings: ByteTrackSettings = DEFAULT_BYTETRACK) -> dict:
     versions = {}
     for package in PACKAGES:
         try:
@@ -103,7 +144,12 @@ def run_details(detector) -> dict:
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "detector": detector.name,
         "detector_threshold": getattr(detector, "threshold", None),
-        "tracker": "ByteTrack from the trackers library, default settings, frame rate set per clip",
+        "tracker": {
+            "name": "bytetrack",
+            "library": "trackers",
+            "settings": tracker_settings.as_dict(),
+            "frame_rate": "set per clip",
+        },
         "footage_filter": "stand-in: every frame is play",
         "packages": versions,
     }
