@@ -160,3 +160,31 @@ def test_malformed_seqinfo_with_explicit_fps_opens_fine(make_sequence):
     clip = Clip(seq, fps=30)
     assert clip.info.fps == 30.0
     assert clip.info.clip_id == "GAME_A_001"
+
+
+def test_read_frame_returns_the_asked_frame_of_an_image_folder(make_sequence):
+    clip = Clip(make_sequence(n_frames=4))
+    assert clip.read_frame(3).mean() > clip.read_frame(0).mean()      # brighter later frames
+    assert clip.read_frame(2).shape == (48, 64, 3)
+
+
+def test_read_frame_out_of_range_or_unreadable_names_the_clip_and_frame(make_sequence):
+    seq = make_sequence(name="GAME_D_004", n_frames=3)
+    (seq / "img1" / "000002.jpg").write_bytes(b"not a jpeg")
+    clip = Clip(seq)
+    with pytest.raises(ClipError, match=r"GAME_D_004.*frame 1"):
+        clip.read_frame(1)
+    with pytest.raises(ClipError, match=r"GAME_D_004.*frame 7"):
+        clip.read_frame(7)
+
+
+def test_read_frame_from_a_video_file(tmp_path):
+    path = tmp_path / "shift.mp4"
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (64, 48))
+    for i in range(6):
+        writer.write(np.full((48, 64, 3), 30 * i, dtype=np.uint8))
+    writer.release()
+    clip = Clip(path)
+    assert clip.read_frame(5).mean() > clip.read_frame(1).mean()
+    with pytest.raises(ClipError, match="frame 6"):
+        clip.read_frame(6)

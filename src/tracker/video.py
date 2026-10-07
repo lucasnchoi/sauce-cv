@@ -126,3 +126,26 @@ class Clip:
                 index += 1
         finally:
             capture.release()
+
+    def read_frame(self, index: int) -> np.ndarray:
+        """One frame by 0-based index. Image folders read the file; videos seek."""
+        if index < 0 or index >= self.info.n_frames:
+            raise ClipError(
+                f"clip '{self.info.clip_id}': frame {index} is out of range (0..{self.info.n_frames - 1})"
+            )
+        if self._video_path is None:
+            image = cv2.imread(str(self._images[index]))
+            if image is None:
+                raise ClipError(
+                    f"clip '{self.info.clip_id}': frame {index} ({self._images[index].name}) could not be read"
+                )
+            return image
+        capture = cv2.VideoCapture(str(self._video_path))
+        try:
+            capture.set(cv2.CAP_PROP_POS_FRAMES, index)
+            ok, image = capture.read()
+        finally:
+            capture.release()
+        if not ok or image is None:
+            raise ClipError(f"clip '{self.info.clip_id}': frame {index} could not be read from the video")
+        return image
