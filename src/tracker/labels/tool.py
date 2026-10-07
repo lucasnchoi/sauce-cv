@@ -29,6 +29,11 @@ def side_by_side(frame: np.ndarray, legend: np.ndarray) -> np.ndarray:
     return np.hstack([pad(frame), pad(legend)])
 
 
+def inside_frame(x: int, y: int, shape) -> bool:
+    """True when (x, y) lies on the frame image, not on the legend panel beside it."""
+    return 0 <= x < shape[1] and 0 <= y < shape[0]
+
+
 def render_current(session: LabelSession, sequences: dict[str, Path]) -> np.ndarray:
     clip_id, frame = session.current
     image = Clip(sequences[clip_id]).read_frame(frame)
@@ -37,6 +42,7 @@ def render_current(session: LabelSession, sequences: dict[str, Path]) -> np.ndar
 
 def run_tool(session: LabelSession, sequences: dict[str, Path], labels_path, image_size=(1280, 720), window="label-rink") -> None:
     clips: dict[str, Clip] = {}
+    frame_shape = [0, 0]
 
     def clip_for(clip_id):
         if clip_id not in clips:
@@ -44,6 +50,8 @@ def run_tool(session: LabelSession, sequences: dict[str, Path], labels_path, ima
         return clips[clip_id]
 
     def on_mouse(event, x, y, flags, param):
+        if not inside_frame(x, y, frame_shape):
+            return
         if event == cv2.EVENT_LBUTTONDOWN:
             session.place(x, y)
         elif event == cv2.EVENT_RBUTTONDOWN:
@@ -63,6 +71,7 @@ def run_tool(session: LabelSession, sequences: dict[str, Path], labels_path, ima
     while True:
         clip_id, frame = session.current
         image = clip_for(clip_id).read_frame(frame)
+        frame_shape[:] = image.shape[:2]
         cv2.imshow(window, side_by_side(session.render(image), session.legend()))
         key = cv2.waitKey(30) & 0xFF
         if key == ord("]"): session.next_keypoint()
