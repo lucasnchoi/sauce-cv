@@ -150,3 +150,27 @@ def test_drift_by_range_finds_the_best_shift_in_each_half():
     assert (result[0]["best_k"], result[0]["share_at_best"], result[0]["share_at_zero"]) == (0, 1.0, 1.0)
     # second range: k=1 matches all 10 (prediction f against ground truth f-1 at x = 5f); k=0 is 5 px off, IoU 1/3
     assert (result[1]["best_k"], result[1]["share_at_best"], result[1]["share_at_zero"]) == (1, 1.0, 0.0)
+
+
+from tracker.analysis.box_offset import NTSC_RATIO, ntsc_fit
+
+
+def test_ntsc_fit_recognises_a_drift_of_one_frame_per_1001():
+    # ranges (0,1000), (1001,2001), ...: mid-frames 500, 1501, 2502, 3503, 4504 predict k = 0.4995, 1.4995, ...;
+    # observed 1, 2, 3, 4, 5 -> every error is 0.5005, under the 0.75 limit, and k never decreases
+    ranges = [{"range": (i * 1001, (i + 1) * 1001 - 1), "best_k": i + 1, "share_at_best": 0.9, "share_at_zero": 0.5} for i in range(5)]
+    fit = ntsc_fit(ranges)
+    assert fit["fits"] is True and fit["monotonic"] is True and fit["no_drift"] is False
+    assert fit["max_abs_error"] == pytest.approx(0.5005, abs=1e-3)
+    assert fit["ranges"][0] == {"first": 0, "last": 1000, "mid": 500.0, "best_k": 1, "predicted_k": pytest.approx(500.0 / NTSC_RATIO), "error": pytest.approx(1 - 500.0 / NTSC_RATIO)}
+
+
+def test_ntsc_fit_rejects_a_clip_that_starts_offset_and_names_no_drift():
+    early = [{"range": (0, 999), "best_k": 2, "share_at_best": 0.9, "share_at_zero": 0.5},
+             {"range": (1000, 1999), "best_k": 3, "share_at_best": 0.9, "share_at_zero": 0.5}]
+    fit = ntsc_fit(early)
+    assert fit["fits"] is False and fit["no_drift"] is False and fit["max_abs_error"] > 0.75
+    flat = [{"range": (0, 999), "best_k": 0, "share_at_best": 0.97, "share_at_zero": 0.97}]
+    assert ntsc_fit(flat) == {"ranges": [{"first": 0, "last": 999, "mid": 499.5, "best_k": 0, "predicted_k": pytest.approx(499.5 / NTSC_RATIO), "error": pytest.approx(-499.5 / NTSC_RATIO)}],
+                              "max_abs_error": pytest.approx(499.5 / NTSC_RATIO), "monotonic": True, "fits": True, "no_drift": True}
+    assert ntsc_fit([]) == {"ranges": [], "max_abs_error": 0.0, "monotonic": True, "fits": False, "no_drift": True}

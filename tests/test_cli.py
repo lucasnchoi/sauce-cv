@@ -185,6 +185,7 @@ def test_diagnose_boxes_shift_writes_the_shift_tables(dataset, tmp_path):
     assert shift["drift_by_range"][0]["share_at_zero"] == 1.0
     text = (out / "shift.md").read_text()
     assert held[0] in text and held[1] in text and "k=+4" in text
+    assert (out / "ntsc.md").exists()
 
 
 def test_diagnose_boxes_without_shift_writes_no_shift_files(dataset, tmp_path):

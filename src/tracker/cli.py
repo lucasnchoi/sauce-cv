@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from tracker.analysis.box_offset import diagnose_clip, draw_comparison, shift_clip
+from tracker.analysis.box_offset import NTSC_RATIO, diagnose_clip, draw_comparison, ntsc_fit, shift_clip
 from tracker.analysis.tracker_grid import load_grid, one_factor_grid, run_grid
 from tracker.datasets.mot import list_sequences, load_mot_ground_truth
 from tracker.datasets.split import DEFAULT_SEED, choose_heldout, load_split, save_split
@@ -16,7 +16,7 @@ from tracker.labels.rink_keypoints import build_frame_list, load_frame_list, loa
 from tracker.labels.session import LabelSession
 from tracker.labels.tool import render_current, run_tool
 from tracker.evaluate.scorecard import build_scorecard, read_fps_by_clip, write_scorecard
-from tracker.pipeline import retrack_run, run_details, run_many, score_run
+from tracker.pipeline import read_clip_info, retrack_run, run_details, run_many, score_run
 from tracker.stages.detect_track import ByteTrackSettings
 from tracker.tables import read_table
 from tracker.video import Clip, ClipError
@@ -236,6 +236,17 @@ def _diagnose(args) -> int:
     (args.out / "summary.md").write_text("\n".join(lines) + "\n")
     if args.shift:
         _write_shift_table(args.out / "shift.md", args.run, shifts)
+        lines = ["# NTSC check", "",
+                 f"Run: `{args.run}`. Predicted k at a range's mid-frame is mid / {NTSC_RATIO:g}; a clip fits when every "
+                 "|best k - predicted| <= 0.75 and best k never decreases. 'no drift' means best k is 0 in every fifth.", "",
+                 "| Clip | frames | fps | best k per fifth | predicted k per fifth | max abs error | verdict |", "|---|---|---|---|---|---|---|"]
+        for clip_id, s in shifts.items():
+            fit = ntsc_fit(s["drift_by_range"])
+            info = read_clip_info(args.run / clip_id / "clip.json")
+            verdict = "no drift" if fit["no_drift"] else ("fits" if fit["fits"] else "drifts, does not fit")
+            lines.append(f"| {clip_id} | {info.n_frames} | {info.fps:g} | " + ", ".join(f"{r['best_k']:+d}" for r in fit["ranges"])
+                         + " | " + ", ".join(f"{r['predicted_k']:.1f}" for r in fit["ranges"]) + f" | {fit['max_abs_error']:.2f} | {verdict} |")
+        (args.out / "ntsc.md").write_text("\n".join(lines) + "\n")
 
     for clip_id in args.draw:
         if clip_id not in reports:

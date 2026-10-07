@@ -193,3 +193,22 @@ def draw_comparison(clip, frame: int, gt: pl.DataFrame, tracks: pl.DataFrame, de
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(out_path), image)
+
+
+NTSC_RATIO = 1001.0   # one frame of drift per 1001 frames: 60 fps indexing against a 59.94 fps clock, or the reverse
+
+
+def ntsc_fit(ranges: list[dict], ratio: float = NTSC_RATIO) -> dict:
+    """Does the best shift per range grow like mid_frame / ratio? A hypothesis test, not a correction."""
+    rows = []
+    for r in ranges:
+        first, last = r["range"]
+        mid = (first + last) / 2
+        predicted = mid / ratio
+        rows.append({"first": int(first), "last": int(last), "mid": float(mid), "best_k": int(r["best_k"]),
+                     "predicted_k": float(predicted), "error": float(r["best_k"] - predicted)})
+    ks = [row["best_k"] for row in rows]
+    monotonic = all(a <= b for a, b in zip(ks, ks[1:]))
+    max_abs_error = max((abs(row["error"]) for row in rows), default=0.0)
+    return {"ranges": rows, "max_abs_error": float(max_abs_error), "monotonic": monotonic,
+            "fits": bool(rows) and monotonic and max_abs_error <= 0.75, "no_drift": all(k == 0 for k in ks)}
