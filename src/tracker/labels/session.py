@@ -25,7 +25,7 @@ class LabelSession:
                     for r in part.iter_rows(named=True)
                 }
         self._edited: set[tuple[str, int]] = set()
-        self._history: dict[tuple[str, int], list[dict[int, Point]]] = {}
+        self._history: dict[tuple[str, int], list[tuple[dict[int, Point], bool]]] = {}
         self.index = 0
         self.keypoint = self._first_unset()
 
@@ -85,14 +85,16 @@ class LabelSession:
 
     # -- edits -------------------------------------------------------------------------------
     def _edit(self, value: Point | type(...)) -> None:
-        self._history.setdefault(self.current, []).append(dict(self.current_points))
+        self._history.setdefault(self.current, []).append((dict(self.current_points), self.current in self._edited))
         if value is ...:
             self.current_points.pop(self.keypoint, None)
         else:
             self.current_points[self.keypoint] = value
         self._edited.add(self.current)
         if value is not ...:
-            self.keypoint = self._first_unset(self.keypoint + 1)
+            candidate = self._first_unset(self.keypoint + 1)
+            if candidate not in self.current_points:
+                self.keypoint = candidate
 
     def place(self, x: float, y: float) -> None:
         self._edit((float(x), float(y)))
@@ -107,7 +109,10 @@ class LabelSession:
         history = self._history.get(self.current)
         if not history:
             return
-        self.points[self.current] = history.pop()
+        snapshot, was_edited = history.pop()
+        self.points[self.current] = snapshot
+        if not was_edited:
+            self._edited.discard(self.current)
         self.keypoint = self._first_unset()
 
     # -- prelabels and output ----------------------------------------------------------------

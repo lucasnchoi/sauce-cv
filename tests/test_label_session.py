@@ -102,3 +102,29 @@ def test_render_draws_points_and_legend_highlights_the_current_keypoint():
     assert out[24, 32].tolist() != [0, 0, 0]
     legend = s.legend()
     assert legend.ndim == 3 and legend.shape[2] == 3
+
+
+def test_placing_the_last_unset_keypoint_keeps_the_cursor_there():
+    s = fresh()
+    for k in range(33):
+        s.select(k); s.place(1.0 * k, 2.0)
+    assert s.keypoint == 32
+
+
+def test_undoing_the_only_edit_leaves_the_frame_unlabelled():
+    s = fresh()
+    s.place(1.0, 1.0)
+    s.undo()
+    assert not s.is_labelled(("A_001", 3))
+    assert s.progress == (0, 3)
+    assert s.frame_table().height == 0
+
+
+def test_prelabels_fill_an_untouched_starting_frame():
+    s = fresh()
+    pre = from_rows("keypoints", [
+        {"clip_id": "A_001", "frame": 3, "keypoint_id": 0, "x_px": 12.0, "y_px": 34.0, "conf": 0.9},
+    ])
+    s.load_prelabels(pre)
+    assert s.points[("A_001", 3)] == {0: (12.0, 34.0)}
+    assert not s.is_labelled(("A_001", 3))
