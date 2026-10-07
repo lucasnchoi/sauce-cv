@@ -109,7 +109,21 @@ def _settings(pairs: list[str]) -> ByteTrackSettings:
         if not sep or not key:
             raise ValueError(f"setting '{pair}' is not KEY=VALUE")
         values[key] = value
-    return ByteTrackSettings.from_dict(values)
+    try:
+        return ByteTrackSettings.from_dict(values)
+    except ValueError as error:
+        bad = next((k for k, v in values.items() if not _looks_numeric(v)), None)
+        if bad is not None:
+            raise ValueError(f"setting '{bad}' needs a number, got '{values[bad]}'") from error
+        raise
+
+
+def _looks_numeric(text: str) -> bool:
+    try:
+        float(text)
+        return True
+    except ValueError:
+        return False
 
 
 def _split(args) -> int:
@@ -146,7 +160,10 @@ def _run(args, make_detector) -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     run_file = args.out / "run.json"
     run_file.write_text(json.dumps({"run": details, "clips": {}}, indent=2) + "\n")
-    results = run_many(clip_paths, args.out, detector, settings.factory(), fps=args.fps, overlay=not args.no_overlay)
+    try:
+        results = run_many(clip_paths, args.out, detector, settings.factory(), fps=args.fps, overlay=not args.no_overlay)
+    except ValueError as error:
+        return _usage_error(str(error))
     run_file.write_text(json.dumps({"run": details, "clips": results}, indent=2) + "\n")
     for clip, error in results.items():
         print(f"{clip}: {'ok' if error is None else 'FAILED: ' + error}")
@@ -243,6 +260,8 @@ def _diagnose(args) -> int:
 def _grid(args) -> int:
     if args.subset == "heldout":
         return _usage_error("the grid tunes settings, so it never scores the held-out clips; use --subset train")
+    if not args.one_factor and args.grid is not None and not args.grid.is_file():
+        return _usage_error(f"grid file not found: {args.grid}")
     try:
         points = one_factor_grid() if args.one_factor else load_grid(args.grid)
     except ValueError as error:

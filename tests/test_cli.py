@@ -207,7 +207,7 @@ def test_diagnose_boxes_keeps_going_when_one_draw_clip_cannot_be_drawn(dataset, 
          make_detector=fake_detector)
     held = json.loads(split.read_text())["heldout"]
     # Diagnosis needs only tables and ground truth, so it succeeds; drawing needs the images.
-    (dataset / "mot-challenge-format" / "train" / held[0] / "img1" / "000002.jpg").write_bytes(b"not a jpeg")
+    (dataset / "mot-challenge-format" / "train" / held[0] / "img1" / "000003.jpg").write_bytes(b"not a jpeg")
     out = tmp_path / "diag"
     code = main(["diagnose-boxes", "--run", str(run_dir), "--dataset", str(dataset), "--split", str(split),
                  "--out", str(out), "--frames", "2", "--draw", held[0], "--draw", held[1]])
@@ -281,3 +281,31 @@ def test_score_reports_lower_thresholds_and_frame_rates(dataset, tmp_path, capsy
     assert card["tracking"]["overall"]["idf1_at_0.3"] == pytest.approx(0.8)      # same as 0.5 here: boxes are exact
     assert card["tracking"]["by_frame_rate"]["30"]["n_clips"] == 2
     assert "IDF1@0.3 80.0%" in capsys.readouterr().out
+
+
+def test_a_non_numeric_setting_names_the_key(dataset, tmp_path, capsys):
+    clip = dataset / "mot-challenge-format" / "train" / "A_001"
+    code = main(["run", "--out", str(tmp_path / "run"), "--clip", str(clip), "--set", "lost_track_buffer=abc"], make_detector=fake_detector)
+    assert code == 2 and "lost_track_buffer" in capsys.readouterr().err
+
+
+def test_grid_with_a_missing_file_is_a_usage_error(dataset, tmp_path, capsys):
+    split = tmp_path / "heldout.json"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    code = main(["grid", "--run", str(tmp_path / "src"), "--dataset", str(dataset), "--split", str(split),
+                 "--subset", "train", "--out", str(tmp_path / "grid"), "--grid", str(tmp_path / "nope.json")])
+    assert code == 2 and "nope.json" in capsys.readouterr().err
+
+
+def test_run_json_survives_an_interrupted_run(dataset, tmp_path, monkeypatch):
+    import tracker.cli as cli_module
+
+    def killed(*args, **kwargs):
+        raise RuntimeError("killed")
+
+    monkeypatch.setattr(cli_module, "run_many", killed)
+    clip = dataset / "mot-challenge-format" / "train" / "A_001"
+    with pytest.raises(RuntimeError):
+        main(["run", "--out", str(tmp_path / "run"), "--clip", str(clip), "--no-overlay"], make_detector=fake_detector)
+    recorded = json.loads((tmp_path / "run" / "run.json").read_text())
+    assert recorded["run"]["detector"] == "fake-detector" and recorded["clips"] == {}

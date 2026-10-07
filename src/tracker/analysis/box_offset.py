@@ -181,13 +181,7 @@ def shift_clip(run_dir, clip_id: str, seq_dir, n_ranges: int = 5, ks=range(-2, 9
 
 def draw_comparison(clip, frame: int, gt: pl.DataFrame, tracks: pl.DataFrame, detections: pl.DataFrame, out_path) -> None:
     """Ground truth green, tracked boxes red with their id, raw detections thin blue."""
-    image = None
-    for index, img in clip.frames():
-        if index == frame:
-            image = img
-            break
-    if image is None:
-        raise ValueError(f"clip '{clip.info.clip_id}' has no frame {frame}")
+    image = clip.read_frame(frame)
     for row in detections.filter(pl.col("frame") == frame).iter_rows(named=True):
         cv2.rectangle(image, (int(row["x1"]), int(row["y1"])), (int(row["x2"]), int(row["y2"])), (255, 128, 0), 1)
     for row in gt.filter(pl.col("frame") == frame).iter_rows(named=True):
