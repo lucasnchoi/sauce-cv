@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from tracker.analysis.box_offset import diagnose_clip, draw_comparison
+from tracker.analysis.tracker_grid import load_grid, one_factor_grid, run_grid
 from tracker.datasets.mot import list_sequences, load_mot_ground_truth
 from tracker.datasets.split import DEFAULT_SEED, choose_heldout, load_split, save_split
 from tracker.evaluate.scorecard import build_scorecard, write_scorecard
@@ -61,6 +62,16 @@ def _parser() -> argparse.ArgumentParser:
     diagnose.add_argument("--out", type=Path, required=True)
     diagnose.add_argument("--frames", type=int, default=10, help="comparison frames to draw per --draw clip")
     diagnose.add_argument("--draw", action="append", default=[], metavar="CLIP_ID")
+
+    grid = commands.add_parser("grid", help="score a finished run under each ByteTrack setting (training clips only)")
+    grid.add_argument("--run", type=Path, required=True)
+    grid.add_argument("--dataset", type=Path, required=True)
+    grid.add_argument("--split", type=Path, required=True)
+    grid.add_argument("--subset", choices=["heldout", "train"], default="train")
+    grid.add_argument("--out", type=Path, required=True)
+    source = grid.add_mutually_exclusive_group(required=True)
+    source.add_argument("--grid", type=Path, help="JSON list of settings objects")
+    source.add_argument("--one-factor", action="store_true", help="baseline plus each single-setting change")
     return parser
 
 
@@ -184,6 +195,23 @@ def _diagnose(args) -> int:
     return 0 if reports else 1
 
 
+def _grid(args) -> int:
+    if args.subset == "heldout":
+        return _usage_error("the grid tunes settings, so it never scores the held-out clips; use --subset train")
+    try:
+        points = one_factor_grid() if args.one_factor else load_grid(args.grid)
+    except ValueError as error:
+        return _usage_error(str(error))
+    sequences = list_sequences(args.dataset)
+    clip_ids = load_split(args.split)[args.subset]
+    records = run_grid(args.run, args.out, points, sequences, clip_ids)
+    for r in records:
+        idf1 = "—" if r["idf1"] is None else f"{r['idf1']:.1%}"
+        print(f"{r['label']}: IDF1 {idf1} over {r['n_clips']} clips ({len(r['failed'])} failed)")
+    print(f"best: {records[0]['label']}; see {args.out / 'grid.md'}")
+    return 0
+
+
 def _score(args) -> int:
     sequences = list_sequences(args.dataset)
     clip_ids = load_split(args.split)[args.subset]
@@ -214,6 +242,8 @@ def main(argv: list[str] | None = None, make_detector=None) -> int:
         return _retrack(args)
     if args.command == "diagnose-boxes":
         return _diagnose(args)
+    if args.command == "grid":
+        return _grid(args)
     return _score(args)
 
 

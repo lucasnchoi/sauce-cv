@@ -185,3 +185,30 @@ def test_diagnose_boxes_keeps_going_when_one_draw_clip_cannot_be_drawn(dataset, 
     printed = capsys.readouterr().out
     assert f"{held[0]}: not drawn" in printed
     assert f"{held[1]}: drew 2 frames" in printed
+
+
+def test_grid_command_runs_a_small_grid(dataset, tmp_path, capsys):
+    split = tmp_path / "heldout.json"
+    src = tmp_path / "src"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    main(["run", "--out", str(src), "--dataset", str(dataset), "--split", str(split), "--subset", "train", "--no-overlay"],
+         make_detector=fake_detector)
+    grid_file = tmp_path / "grid.json"
+    grid_file.write_text(json.dumps([{"minimum_consecutive_frames": 3}]))
+    code = main(["grid", "--run", str(src), "--dataset", str(dataset), "--split", str(split), "--subset", "train",
+                 "--out", str(tmp_path / "grid"), "--grid", str(grid_file)])
+    assert code == 0
+    records = json.loads((tmp_path / "grid" / "grid.json").read_text())
+    assert {r["label"] for r in records} == {"baseline", "minimum_consecutive_frames=3"}
+    # 3-frame clips, ground truth on frames 0-2: baseline tracks frames 1, 2 (IDF1 0.8); mcf=3 tracks frame 2 only
+    # (idtp 1, n_pred 1: IDF1 = 2 * 1 / (3 + 1) = 0.5). Baseline is best.
+    assert "best: baseline" in capsys.readouterr().out
+
+
+def test_grid_command_refuses_the_heldout_subset(dataset, tmp_path, capsys):
+    split = tmp_path / "heldout.json"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    code = main(["grid", "--run", str(tmp_path / "src"), "--dataset", str(dataset), "--split", str(split),
+                 "--subset", "heldout", "--out", str(tmp_path / "grid"), "--one-factor"])
+    assert code == 2
+    assert "held-out" in capsys.readouterr().err
