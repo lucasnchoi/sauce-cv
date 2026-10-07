@@ -23,7 +23,7 @@ On the held-out set, precision is 87.2% and recall 80.6% (`baseline-results.md`)
 All three stay inside the decision-point-1 rule: no Ultralytics, no new external data.
 
 1. **Fine-tune the detector on HockeyAI + VIP-HTD boxes** (new small plan).
-   - Addresses: missed boxes, the largest component on the training clips (44,491 missed of 260,768 ground-truth boxes, `investigation-tracker-settings.md`); recall is about 89% to 91% even on the cleanest held-out clips (`baseline-results.md`). Any later tracker would also use better boxes.
+   - Addresses: missed boxes, the largest component on the training clips (44,491 missed of 260,768 ground-truth boxes, `investigation-tracker-settings.md`), though some of the missed boxes on the poor clips are displaced boxes that fall just under IoU 0.5, not undetected players (`investigation-box-offset.md`, `baseline-results.md`); recall is about 89% to 91% even on the cleanest held-out clips (`baseline-results.md`). Any later tracker would also use better boxes.
    - Does not address: identity loss, which is the larger cost on three of five held-out clips (8 to 22 points; `baseline-results.md`). Investigation 1 found no reason to change the detector for box shape (worth only 1 to 2 points at IoU 0.5 on training clips).
    - Cost and risk: HockeyAI is external data, which decision point 1 ruled out, so this option as worded needs the owner to reverse that; VIP-HTD training clips alone would stay internal. The notes did not measure how many missed boxes the detector never produced. My own inference, not a finding in the notes: fine-tuning on and scoring against labels with the time offset could mix the lag into what the detector learns; Investigation 1 recommends not rewriting ground truth until the offset's source is known.
 2. **Try a different tracker** (for example an appearance-aware one, if a permissively licensed implementation exists).
@@ -36,7 +36,7 @@ All three stay inside the decision-point-1 rule: no Ultralytics, no new external
 
 ## Recommendation
 
-Proceed with rink mapping (option 3): the best ByteTrack setting moved training IDF1 by only 0.6 points against a 14.4-point held-out gap, and on the poor clip CAR_VS_BOS_001 relaxing the overlap rule alone moves IDF1 by 14.1 points (59.4% to 73.5% at IoU 0.3), so neither a tracker change nor a detector fine-tune can be judged against these scores until the ground-truth offset is understood. The offset question below should be answered before any fine-tune or tracker work is scheduled.
+Proceed with rink mapping (option 3), because on the training clips the best ByteTrack setting gained only 0.6 IDF1 points against a gap to the bar of about 14 points. On the same training clips, relaxing the overlap rule from IoU 0.5 to 0.3 alone lifts STL_VS_SJ_003 by 11.5 points (60.0% to 71.5%), so a tracker change or detector fine-tune cannot be judged against these scores until the ground-truth offset (see below) is understood. (The held-out CAR_VS_BOS_001 shows the same pattern, 59.4% to 73.5%, but it is description only and not the reason.)
 
 ## Open items carried forward
 
