@@ -12,6 +12,9 @@ from tracker.analysis.box_offset import diagnose_clip, draw_comparison, shift_cl
 from tracker.analysis.tracker_grid import load_grid, one_factor_grid, run_grid
 from tracker.datasets.mot import list_sequences, load_mot_ground_truth
 from tracker.datasets.split import DEFAULT_SEED, choose_heldout, load_split, save_split
+from tracker.labels.rink_keypoints import build_frame_list, load_frame_list, load_labels, save_frame_list
+from tracker.labels.session import LabelSession
+from tracker.labels.tool import render_current, run_tool
 from tracker.evaluate.scorecard import build_scorecard, write_scorecard
 from tracker.pipeline import retrack_run, run_details, run_many, score_run
 from tracker.stages.detect_track import ByteTrackSettings
@@ -73,6 +76,24 @@ def _parser() -> argparse.ArgumentParser:
     source = grid.add_mutually_exclusive_group(required=True)
     source.add_argument("--grid", type=Path, help="JSON list of settings objects")
     source.add_argument("--one-factor", action="store_true", help="baseline plus each single-setting change")
+    frames_cmd = commands.add_parser("label-frames", help="choose and record the frames to label for rink keypoints")
+    frames_cmd.add_argument("--dataset", type=Path, required=True)
+    frames_cmd.add_argument("--split", type=Path, required=True)
+    frames_cmd.add_argument("--out", type=Path, required=True)
+    frames_cmd.add_argument("--per-clip-train", type=int, default=24)
+    frames_cmd.add_argument("--per-clip-eval", type=int, default=10)
+    frames_cmd.add_argument("--seed", type=int, default=20261007)
+    frames_cmd.add_argument("--force", action="store_true", help="overwrite an existing frame list")
+
+    label = commands.add_parser("label-rink", help="label rink keypoints on the recorded frames")
+    label.add_argument("--dataset", type=Path, required=True)
+    label.add_argument("--frames", type=Path, required=True)
+    label.add_argument("--labels", type=Path, required=True)
+    label.add_argument("--subset", choices=["training", "evaluation", "all"], default="training")
+    label.add_argument("--prelabels", type=Path, help="a run folder holding <clip>/keypoints.parquet to pre-fill from")
+    label.add_argument("--min-conf", type=float, default=0.5)
+    label.add_argument("--start", type=int, default=0, help="frame position to start at")
+    label.add_argument("--render-only", type=Path, help="write the current view to this image and exit (no window)")
     return parser
 
 
@@ -256,6 +277,43 @@ def _score(args) -> int:
     return 0
 
 
+def _label_frames(args) -> int:
+    if args.out.exists() and not args.force:
+        return _usage_error(f"{args.out} exists; the frame list is a permanent record (use --force to replace it)")
+    sequences = list_sequences(args.dataset)
+    split = load_split(args.split)
+    data = build_frame_list(sequences, split, args.per_clip_train, args.per_clip_eval, args.seed)
+    save_frame_list(data, args.out)
+    print(f"{len(data['training'])} training frames and {len(data['evaluation'])} evaluation frames recorded in {args.out}")
+    return 0
+
+
+def _label_rink(args) -> int:
+    sequences = list_sequences(args.dataset)
+    data = load_frame_list(args.frames)
+    frames = {"training": data["training"], "evaluation": data["evaluation"],
+              "all": data["training"] + data["evaluation"]}[args.subset]
+    frames = [(c, int(f)) for c, f in frames]
+    unknown = sorted({c for c, _ in frames} - set(sequences))
+    if unknown:
+        return _usage_error(f"frame list names clips that are not in the dataset: {unknown}")
+    session = LabelSession(frames, load_labels(args.labels))
+    if args.prelabels:
+        for clip_id in sorted({c for c, _ in frames}):
+            path = args.prelabels / clip_id / "keypoints.parquet"
+            if path.is_file():
+                session.load_prelabels(read_table("keypoints", path), args.min_conf)
+    session.jump_to(args.start)
+    if args.render_only:
+        import cv2
+        args.render_only.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(args.render_only), render_current(session, sequences))
+        print(f"rendered {session.current} to {args.render_only}")
+        return 0
+    run_tool(session, sequences, args.labels)
+    return 0
+
+
 def main(argv: list[str] | None = None, make_detector=None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "split":
@@ -268,6 +326,10 @@ def main(argv: list[str] | None = None, make_detector=None) -> int:
         return _diagnose(args)
     if args.command == "grid":
         return _grid(args)
+    if args.command == "label-frames":
+        return _label_frames(args)
+    if args.command == "label-rink":
+        return _label_rink(args)
     return _score(args)
 
 

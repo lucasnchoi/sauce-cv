@@ -242,3 +242,30 @@ def test_grid_command_refuses_the_heldout_subset(dataset, tmp_path, capsys):
                  "--subset", "heldout", "--out", str(tmp_path / "grid"), "--one-factor"])
     assert code == 2
     assert "held-out" in capsys.readouterr().err
+
+
+def test_label_frames_writes_a_frame_list_and_refuses_to_overwrite(dataset, tmp_path, capsys):
+    split = tmp_path / "heldout.json"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    out = tmp_path / "labels" / "rink_frames.json"
+    assert main(["label-frames", "--dataset", str(dataset), "--split", str(split), "--out", str(out),
+                 "--per-clip-train", "2", "--per-clip-eval", "1", "--seed", "3"]) == 0
+    data = json.loads(out.read_text())
+    assert len(data["training"]) == 2 * 5 and len(data["evaluation"]) == 1 * 2 and data["seed"] == 3
+    assert main(["label-frames", "--dataset", str(dataset), "--split", str(split), "--out", str(out)]) == 2
+    assert "exists" in capsys.readouterr().err
+
+
+def test_label_rink_render_only_writes_an_image_without_a_window(dataset, tmp_path):
+    split = tmp_path / "heldout.json"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    frames = tmp_path / "rink_frames.json"
+    main(["label-frames", "--dataset", str(dataset), "--split", str(split), "--out", str(frames),
+          "--per-clip-train", "1", "--per-clip-eval", "1"])
+    out = tmp_path / "view.jpg"
+    code = main(["label-rink", "--dataset", str(dataset), "--frames", str(frames), "--labels", str(tmp_path / "labels.parquet"),
+                 "--render-only", str(out)])
+    assert code == 0 and out.stat().st_size > 0
+    import cv2
+    image = cv2.imread(str(out))
+    assert image.shape[1] > 64            # frame (64 px) plus the legend side by side
