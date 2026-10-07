@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import polars as pl
 
+from tracker.rink import KEYPOINT_IDS
+
 
 class SchemaError(ValueError):
     """A table does not match its definition."""
@@ -61,7 +63,32 @@ TRACKING = {
     "possession_source": pl.String,
 }
 
-SCHEMAS = {"frames": FRAMES, "detections": DETECTIONS, "tracks": TRACKS, "tracking": TRACKING}
+KEYPOINTS = {
+    "clip_id": pl.String,
+    "frame": pl.Int64,
+    "keypoint_id": pl.Int64,
+    "x_px": pl.Float64,
+    "y_px": pl.Float64,
+    "conf": pl.Float64,
+}
+
+RINK_KEYPOINT_LABELS = {
+    "clip_id": pl.String,
+    "frame": pl.Int64,
+    "keypoint_id": pl.Int64,
+    "x_px": pl.Float64,
+    "y_px": pl.Float64,
+    "visible": pl.Boolean,
+}
+
+SCHEMAS = {
+    "frames": FRAMES,
+    "detections": DETECTIONS,
+    "tracks": TRACKS,
+    "tracking": TRACKING,
+    "keypoints": KEYPOINTS,
+    "rink_keypoint_labels": RINK_KEYPOINT_LABELS,
+}
 
 # Columns that may never be null.
 REQUIRED = {
@@ -69,6 +96,8 @@ REQUIRED = {
     "detections": list(DETECTIONS),
     "tracks": list(TRACKS),
     "tracking": ["clip_id", "frame", "time_s", "entity", "position_status", "position_conf"],
+    "keypoints": list(KEYPOINTS),
+    "rink_keypoint_labels": ["clip_id", "frame", "keypoint_id", "visible"],
 }
 
 # Columns restricted to a fixed set of values. Nulls are checked by REQUIRED.
@@ -80,6 +109,8 @@ ALLOWED_VALUES = {
         "position_status": {"observed", "interpolated", "missing"},
         "possession_source": {"observed", "inferred"},
     },
+    "keypoints": {"keypoint_id": set(KEYPOINT_IDS)},
+    "rink_keypoint_labels": {"keypoint_id": set(KEYPOINT_IDS)},
 }
 
 

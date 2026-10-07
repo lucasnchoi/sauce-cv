@@ -82,3 +82,18 @@ def test_detections_table_has_box_columns_and_all_required():
     assert list(SCHEMAS["detections"]) == ["clip_id", "frame", "x1", "y1", "x2", "y2", "conf"]
     assert REQUIRED["detections"] == list(SCHEMAS["detections"])
     assert validate(empty("detections"), "detections").height == 0
+
+
+def test_keypoints_table_restricts_ids_to_the_template():
+    row = {"clip_id": "c", "frame": 0, "keypoint_id": 10, "x_px": 1.0, "y_px": 2.0, "conf": 0.9}
+    assert validate(from_rows("keypoints", [row]), "keypoints").height == 1
+    with pytest.raises(SchemaError, match="keypoint_id"):
+        validate(from_rows("keypoints", [{**row, "keypoint_id": 33}]), "keypoints")
+
+
+def test_label_table_allows_null_pixels_only_with_visible_false_at_schema_level():
+    """The schema allows null pixels; the labels module enforces visible => pixels (Task 3)."""
+    row = {"clip_id": "c", "frame": 0, "keypoint_id": 0, "x_px": None, "y_px": None, "visible": False}
+    assert validate(from_rows("rink_keypoint_labels", [row]), "rink_keypoint_labels").height == 1
+    with pytest.raises(SchemaError, match="visible"):
+        validate(from_rows("rink_keypoint_labels", [{**row, "visible": None}]), "rink_keypoint_labels")
