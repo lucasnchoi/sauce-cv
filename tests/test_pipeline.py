@@ -68,7 +68,7 @@ def test_score_run_scores_good_clips_and_lists_the_rest(make_sequence, tmp_path)
         {"GAME_A_001": scored, "GAME_B_001": not_run},
         ["GAME_A_001", "GAME_B_001", "GAME_C_001"],
     )
-    assert counts["GAME_A_001"].idf1 == 1.0
+    assert counts["GAME_A_001"][0.5].idf1 == 1.0
     assert "tracks" in failed["GAME_B_001"]               # no tracks table for it
     assert "no ground truth sequence" in failed["GAME_C_001"]
 
@@ -163,3 +163,12 @@ def test_retrack_accepts_a_plan_1_run_json_whose_tracker_is_a_string(make_sequen
     retrack_run(src, tmp_path / "out", ByteTrackSettings())
     recorded = json.loads((tmp_path / "out" / "run.json").read_text())["run"]
     assert recorded["tracker"]["settings"]["lost_track_buffer"] == 30
+
+
+def test_score_run_scores_at_three_thresholds(make_sequence, tmp_path):
+    scored = make_sequence(name="GAME_A_001", n_frames=3, gt_rows=GT_ROWS)
+    run_dir = tmp_path / "run"
+    run_clip(scored, run_dir, FakeDetector([BOX]), FakeTrackerFactory(), overlay=False)
+    counts, failed = score_run(run_dir, {"GAME_A_001": scored}, ["GAME_A_001"])
+    assert set(counts["GAME_A_001"]) == {0.5, 0.4, 0.3}
+    assert counts["GAME_A_001"][0.5].idf1 == 1.0 and failed == {}

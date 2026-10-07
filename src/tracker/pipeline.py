@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
 
+import polars as pl
+
 from tracker.datasets.mot import load_mot_ground_truth
 from tracker.evaluate.tracking import TrackingCounts, score_tracking
 from tracker.overlay import render_overlay
@@ -155,9 +157,12 @@ def run_details(detector, tracker_settings: ByteTrackSettings = DEFAULT_BYTETRAC
     }
 
 
-def score_run(run_dir, sequences: dict[str, Path], clip_ids: list[str]
-              ) -> tuple[dict[str, TrackingCounts], dict[str, str]]:
-    counts: dict[str, TrackingCounts] = {}
+THRESHOLDS = (0.5, 0.4, 0.3)
+
+
+def score_run(run_dir, sequences: dict[str, Path], clip_ids: list[str], thresholds=THRESHOLDS
+              ) -> tuple[dict[str, dict[float, TrackingCounts]], dict[str, str]]:
+    counts: dict[str, dict[float, TrackingCounts]] = {}
     failed: dict[str, str] = {}
     for clip_id in clip_ids:
         if clip_id not in sequences:
@@ -166,7 +171,7 @@ def score_run(run_dir, sequences: dict[str, Path], clip_ids: list[str]
         try:
             predicted = read_table("tracks", Path(run_dir) / clip_id / "tracks.parquet")
             truth = load_mot_ground_truth(sequences[clip_id])
-            counts[clip_id] = score_tracking(truth, predicted)
-        except (FileNotFoundError, ValueError) as error:      # SchemaError is a ValueError
+            counts[clip_id] = {t: score_tracking(truth, predicted, iou_threshold=t) for t in thresholds}
+        except (FileNotFoundError, ValueError, pl.exceptions.PolarsError) as error:   # SchemaError is a ValueError
             failed[clip_id] = str(error)
     return counts, failed

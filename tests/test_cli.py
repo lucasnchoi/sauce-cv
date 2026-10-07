@@ -269,3 +269,15 @@ def test_label_rink_render_only_writes_an_image_without_a_window(dataset, tmp_pa
     import cv2
     image = cv2.imread(str(out))
     assert image.shape[1] > 64            # frame (64 px) plus the legend side by side
+
+
+def test_score_reports_lower_thresholds_and_frame_rates(dataset, tmp_path, capsys):
+    split = tmp_path / "heldout.json"
+    run_dir = tmp_path / "run"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    main(["run", "--out", str(run_dir), "--dataset", str(dataset), "--split", str(split), "--no-overlay"], make_detector=fake_detector)
+    assert main(["score", "--run", str(run_dir), "--dataset", str(dataset), "--split", str(split)]) == 0
+    card = json.loads((run_dir / "scorecard.json").read_text())
+    assert card["tracking"]["overall"]["idf1_at_0.3"] == pytest.approx(0.8)      # same as 0.5 here: boxes are exact
+    assert card["tracking"]["by_frame_rate"]["30"]["n_clips"] == 2
+    assert "IDF1@0.3 80.0%" in capsys.readouterr().out

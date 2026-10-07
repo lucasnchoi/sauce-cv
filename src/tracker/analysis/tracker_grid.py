@@ -63,7 +63,7 @@ def run_grid(src_run, out_dir, points: list[ByteTrackSettings], sequences: dict,
         counts, not_scored = score_run(point_dir, sequences, clip_ids)
         for clip, message in not_scored.items():
             failed.setdefault(clip, message)
-        total = _pooled(counts)
+        total = _pooled({c: v[0.5] for c, v in counts.items()})
         records.append({
             "label": point.label(),
             "settings": point.as_dict(),
@@ -71,7 +71,7 @@ def run_grid(src_run, out_dir, points: list[ByteTrackSettings], sequences: dict,
             "precision": total.precision if total else None,
             "recall": total.recall if total else None,
             "n_clips": len(counts),
-            "per_clip": {clip: c.idf1 for clip, c in sorted(counts.items())},
+            "per_clip": {clip: c[0.5].idf1 for clip, c in sorted(counts.items())},
             "failed": failed,
         })
     records.sort(key=lambda r: (r["idf1"] is not None, r["idf1"] or 0.0), reverse=True)

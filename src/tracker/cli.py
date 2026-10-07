@@ -15,7 +15,7 @@ from tracker.datasets.split import DEFAULT_SEED, choose_heldout, load_split, sav
 from tracker.labels.rink_keypoints import build_frame_list, load_frame_list, load_labels, save_frame_list
 from tracker.labels.session import LabelSession
 from tracker.labels.tool import render_current, run_tool
-from tracker.evaluate.scorecard import build_scorecard, write_scorecard
+from tracker.evaluate.scorecard import build_scorecard, read_fps_by_clip, write_scorecard
 from tracker.pipeline import retrack_run, run_details, run_many, score_run
 from tracker.stages.detect_track import ByteTrackSettings
 from tracker.tables import read_table
@@ -263,7 +263,7 @@ def _score(args) -> int:
     counts, failed = score_run(args.run, sequences, clip_ids)
     run_file = args.run / "run.json"
     details = json.loads(run_file.read_text())["run"] if run_file.is_file() else {}
-    scorecard = build_scorecard(counts, failed, details)
+    scorecard = build_scorecard(counts, failed, details, fps_by_clip=read_fps_by_clip(args.run, clip_ids))
     write_scorecard(scorecard, args.run)
     overall = scorecard["tracking"]["overall"]
     if overall is None:
@@ -271,7 +271,7 @@ def _score(args) -> int:
         return 1
     print(
         f"IDF1 {overall['idf1']:.1%}, precision {overall['precision']:.1%}, "
-        f"recall {overall['recall']:.1%} over {len(counts)} clips "
+        f"recall {overall['recall']:.1%}, IDF1@0.3 {overall['idf1_at_0.3']:.1%} over {len(counts)} clips "
         f"({len(failed)} failed); see {args.run / 'scorecard.md'}"
     )
     return 0
