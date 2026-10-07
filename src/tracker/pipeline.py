@@ -5,7 +5,9 @@ clip stops that clip; other clips continue.
 """
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
+from dataclasses import asdict
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
@@ -14,10 +16,10 @@ from tracker.datasets.mot import load_mot_ground_truth
 from tracker.evaluate.tracking import TrackingCounts, score_tracking
 from tracker.overlay import render_overlay
 from tracker.stages.assemble import assemble_tracking
-from tracker.stages.detect_track import bytetrack_factory, run_detect_track
+from tracker.stages.detect_track import bytetrack_factory, run_detect, run_track
 from tracker.stages.footage_filter import passthrough_frames
 from tracker.tables import read_table, write_table
-from tracker.video import Clip
+from tracker.video import Clip, ClipInfo
 
 PACKAGES = ["rfdetr", "trackers", "supervision", "torch", "polars", "opencv-python", "numpy", "scipy"]
 
@@ -39,6 +41,19 @@ def _stage(name: str, clip_id: str):
         raise StageError(name, clip_id, error) from error
 
 
+def write_clip_info(info: ClipInfo, path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(info), indent=2) + "\n")
+
+
+def read_clip_info(path) -> ClipInfo:
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"clip info not found at {path}; run the pipeline on this clip first")
+    return ClipInfo(**json.loads(path.read_text()))
+
+
 def run_clip(clip_path, run_dir, detector, tracker_factory=bytetrack_factory,
              fps: float | None = None, overlay: bool = True) -> str:
     clip_path = Path(clip_path)
@@ -48,11 +63,15 @@ def run_clip(clip_path, run_dir, detector, tracker_factory=bytetrack_factory,
     clip_id = clip.info.clip_id
     out = Path(run_dir) / clip_id
 
+    write_clip_info(clip.info, out / "clip.json")
     with _stage("footage filter", clip_id):
         frames = passthrough_frames(clip.info)
         write_table(frames, "frames", out / "frames.parquet")
-    with _stage("detect and track", clip_id):
-        tracks = run_detect_track(clip, frames, detector, tracker_factory)
+    with _stage("detect", clip_id):
+        detections = run_detect(clip, frames, detector)
+        write_table(detections, "detections", out / "detections.parquet")
+    with _stage("track", clip_id):
+        tracks = run_track(detections, frames, clip.info.fps, tracker_factory)
         write_table(tracks, "tracks", out / "tracks.parquet")
     with _stage("assemble", clip_id):
         write_table(assemble_tracking(tracks, clip.info.fps), "tracking", out / "tracking.parquet")

@@ -33,6 +33,16 @@ TRACKS = {
     "conf": pl.Float64,
 }
 
+DETECTIONS = {
+    "clip_id": pl.String,
+    "frame": pl.Int64,
+    "x1": pl.Float64,
+    "y1": pl.Float64,
+    "x2": pl.Float64,
+    "y2": pl.Float64,
+    "conf": pl.Float64,
+}
+
 TRACKING = {
     "clip_id": pl.String,
     "frame": pl.Int64,
@@ -51,11 +61,12 @@ TRACKING = {
     "possession_source": pl.String,
 }
 
-SCHEMAS = {"frames": FRAMES, "tracks": TRACKS, "tracking": TRACKING}
+SCHEMAS = {"frames": FRAMES, "detections": DETECTIONS, "tracks": TRACKS, "tracking": TRACKING}
 
 # Columns that may never be null.
 REQUIRED = {
     "frames": ["clip_id", "frame", "time_s", "is_play"],
+    "detections": list(DETECTIONS),
     "tracks": list(TRACKS),
     "tracking": ["clip_id", "frame", "time_s", "entity", "position_status", "position_conf"],
 }

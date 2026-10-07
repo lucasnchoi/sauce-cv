@@ -75,3 +75,10 @@ def test_from_rows_fills_absent_nullable_columns_with_null():
 def test_from_rows_rejects_a_misspelt_column():
     with pytest.raises(SchemaError, match="trackid"):
         from_rows("tracks", [{**TRACK_ROW, "trackid": 5}])
+
+
+def test_detections_table_has_box_columns_and_all_required():
+    from tracker.schemas import REQUIRED
+    assert list(SCHEMAS["detections"]) == ["clip_id", "frame", "x1", "y1", "x2", "y2", "conf"]
+    assert REQUIRED["detections"] == list(SCHEMAS["detections"])
+    assert validate(empty("detections"), "detections").height == 0

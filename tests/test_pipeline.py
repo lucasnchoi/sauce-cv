@@ -37,7 +37,7 @@ def test_one_bad_clip_does_not_stop_the_others(make_sequence, tmp_path):
     (bad / "img1" / "000002.jpg").write_bytes(b"not a jpeg")
     results = run_many([bad, good], tmp_path / "run", FakeDetector([BOX]), FakeTrackerFactory())
     assert results["GAME_A_001"] is None
-    assert "stage 'detect and track' failed on clip 'GAME_B_001'" in results["GAME_B_001"]
+    assert "stage 'detect' failed on clip 'GAME_B_001'" in results["GAME_B_001"]
     assert "frame 1" in results["GAME_B_001"]
     assert (tmp_path / "run" / "GAME_A_001" / "tracks.parquet").exists()
 
@@ -71,3 +71,34 @@ def test_score_run_scores_good_clips_and_lists_the_rest(make_sequence, tmp_path)
     assert counts["GAME_A_001"].idf1 == 1.0
     assert "tracks" in failed["GAME_B_001"]               # no tracks table for it
     assert "no ground truth sequence" in failed["GAME_C_001"]
+
+
+from tracker.pipeline import read_clip_info, write_clip_info
+from tracker.video import ClipInfo
+
+
+def test_run_clip_also_writes_detections_and_clip_info(make_sequence, tmp_path):
+    seq = make_sequence(name="GAME_A_001", n_frames=3, fps=60)
+    run_dir = tmp_path / "run"
+    run_clip(seq, run_dir, FakeDetector([BOX]), FakeTrackerFactory(), overlay=False)
+    out = run_dir / "GAME_A_001"
+    assert read_table("detections", out / "detections.parquet").height == 3
+    info = read_clip_info(out / "clip.json")
+    assert info == ClipInfo(clip_id="GAME_A_001", fps=60.0, n_frames=3, width=64, height=48)
+
+
+def test_clip_info_round_trips(tmp_path):
+    info = ClipInfo(clip_id="x", fps=29.97, n_frames=12, width=640, height=360)
+    write_clip_info(info, tmp_path / "deep" / "clip.json")
+    assert read_clip_info(tmp_path / "deep" / "clip.json") == info
+
+
+def test_a_failing_detector_names_the_detect_stage(make_sequence, tmp_path):
+    class Exploding:
+        name = "boom"
+
+        def detect(self, image_bgr):
+            raise RuntimeError("cuda fell over")
+
+    with pytest.raises(StageError, match=r"stage 'detect' failed on clip 'GAME_A_001'.*cuda fell over"):
+        run_clip(make_sequence(name="GAME_A_001", n_frames=2), tmp_path / "run", Exploding(), FakeTrackerFactory())
