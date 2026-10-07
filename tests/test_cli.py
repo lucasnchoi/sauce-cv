@@ -169,6 +169,36 @@ def test_diagnose_boxes_writes_json_per_clip_a_summary_and_frames(dataset, tmp_p
     assert len(list((out / "frames" / held[0]).glob("*.jpg"))) == 2
 
 
+def test_diagnose_boxes_shift_writes_the_shift_tables(dataset, tmp_path):
+    split = tmp_path / "heldout.json"
+    run_dir = tmp_path / "run"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    main(["run", "--out", str(run_dir), "--dataset", str(dataset), "--split", str(split), "--no-overlay"],
+         make_detector=fake_detector)
+    held = json.loads(split.read_text())["heldout"]
+    out = tmp_path / "diag"
+    assert main(["diagnose-boxes", "--run", str(run_dir), "--dataset", str(dataset), "--split", str(split),
+                 "--out", str(out), "--shift"]) == 0
+    shift = json.loads((out / f"{held[0]}.shift.json").read_text())
+    # The ground-truth box equals the detector's box and 2 frames are tracked, so both match at k=0.
+    assert shift["shifted_share"]["0"] == 1.0
+    assert shift["drift_by_range"][0]["share_at_zero"] == 1.0
+    text = (out / "shift.md").read_text()
+    assert held[0] in text and held[1] in text and "k=+4" in text
+
+
+def test_diagnose_boxes_without_shift_writes_no_shift_files(dataset, tmp_path):
+    split = tmp_path / "heldout.json"
+    run_dir = tmp_path / "run"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    main(["run", "--out", str(run_dir), "--dataset", str(dataset), "--split", str(split), "--no-overlay"],
+         make_detector=fake_detector)
+    out = tmp_path / "diag"
+    assert main(["diagnose-boxes", "--run", str(run_dir), "--dataset", str(dataset), "--split", str(split),
+                 "--out", str(out)]) == 0
+    assert not (out / "shift.md").exists()
+
+
 def test_diagnose_boxes_keeps_going_when_one_draw_clip_cannot_be_drawn(dataset, tmp_path, capsys):
     split = tmp_path / "heldout.json"
     run_dir = tmp_path / "run"

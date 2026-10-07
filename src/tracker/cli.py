@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from tracker.analysis.box_offset import diagnose_clip, draw_comparison
+from tracker.analysis.box_offset import diagnose_clip, draw_comparison, shift_clip
 from tracker.analysis.tracker_grid import load_grid, one_factor_grid, run_grid
 from tracker.datasets.mot import list_sequences, load_mot_ground_truth
 from tracker.datasets.split import DEFAULT_SEED, choose_heldout, load_split, save_split
@@ -61,6 +61,7 @@ def _parser() -> argparse.ArgumentParser:
     diagnose.add_argument("--subset", choices=["heldout", "train"], default="heldout")
     diagnose.add_argument("--out", type=Path, required=True)
     diagnose.add_argument("--frames", type=int, default=10, help="comparison frames to draw per --draw clip")
+    diagnose.add_argument("--shift", action="store_true", help="also test the ground truth read k frames earlier (shift.md)")
     diagnose.add_argument("--draw", action="append", default=[], metavar="CLIP_ID")
 
     grid = commands.add_parser("grid", help="score a finished run under each ByteTrack setting (training clips only)")
@@ -145,21 +146,42 @@ def _retrack(args) -> int:
     return 1 if any(error is not None for error in results.values()) else 0
 
 
+def _write_shift_table(path: Path, run: Path, shifts: dict) -> None:
+    """Share of tracked boxes at IoU 0.5 or more per k, then the best k in each fifth of each clip."""
+    ks = list(next(iter(shifts.values()))["shifted_share"]) if shifts else []
+    lines = ["# Frame-shift test", "",
+             f"Run: `{run}`. The tracked box at frame f is compared with the ground truth labelled f-k; "
+             "cells are the share of tracked boxes at IoU 0.5 or more. k=0 is the real labelling.", "",
+             "| Clip | " + " | ".join(f"k={int(k):+d}" for k in ks) + " |", "|---|" + "---|" * len(ks)]
+    for clip_id, s in shifts.items():
+        lines.append(f"| {clip_id} | " + " | ".join(f"{s['shifted_share'][k]:.1%}" for k in ks) + " |")
+    lines += ["", "Best k in each fifth of the clip's tracked frames (share at that k, share at k=0):", "",
+              "| Clip | 1st | 2nd | 3rd | 4th | 5th |", "|---|---|---|---|---|---|"]
+    for clip_id, s in shifts.items():
+        cells = [f"{r['best_k']:+d} ({r['share_at_best']:.1%}, {r['share_at_zero']:.1%})" for r in s["drift_by_range"]]
+        lines.append(f"| {clip_id} | " + " | ".join(cells) + " |")
+    path.write_text("\n".join(lines) + "\n")
+
+
 def _diagnose(args) -> int:
     sequences = list_sequences(args.dataset)
     clip_ids = load_split(args.split)[args.subset]
     args.out.mkdir(parents=True, exist_ok=True)
-    reports, failed = {}, {}
+    reports, shifts, failed = {}, {}, {}
     for clip_id in clip_ids:
         if clip_id not in sequences:
             failed[clip_id] = "no ground truth sequence with this name in the dataset"
             continue
         try:
             reports[clip_id] = diagnose_clip(args.run, clip_id, sequences[clip_id])
+            if args.shift:
+                shifts[clip_id] = shift_clip(args.run, clip_id, sequences[clip_id])
         except (FileNotFoundError, ValueError) as error:
             failed[clip_id] = str(error)
             continue
         (args.out / f"{clip_id}.json").write_text(json.dumps(reports[clip_id], indent=2) + "\n")
+        if args.shift:
+            (args.out / f"{clip_id}.shift.json").write_text(json.dumps(shifts[clip_id], indent=2) + "\n")
     lines = ["# Box diagnosis", "", f"Run: `{args.run}`", "",
              "| Clip | fps | boxes | <0.1 | 0.1-0.3 | 0.3-0.5 | >=0.5 | med dx | med dy | med d_bottom | med w ratio | med h ratio | tracks==dets | IDF1@0.3 | @0.4 | @0.5 |",
              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
@@ -174,6 +196,8 @@ def _diagnose(args) -> int:
     if failed:
         lines += ["", "## Not diagnosed", ""] + [f"- {c}: {m}" for c, m in sorted(failed.items())]
     (args.out / "summary.md").write_text("\n".join(lines) + "\n")
+    if args.shift:
+        _write_shift_table(args.out / "shift.md", args.run, shifts)
 
     for clip_id in args.draw:
         if clip_id not in reports:

@@ -86,4 +86,6 @@ def test_a_point_that_fails_on_one_clip_still_scores_the_others(cached_run, tmp_
     flaky_record = next(r for r in records if r["label"] == "lost_track_buffer=5")
     assert flaky_record["n_clips"] == 1
     assert "B_001" in flaky_record["failed"]
+    # the scorer also reports B_001 (no tracks table); the re-track message is the one kept
+    assert "stage 'track' failed" in flaky_record["failed"]["B_001"]
     assert next(r for r in records if r["label"] == "baseline")["n_clips"] == 2

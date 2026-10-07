@@ -112,6 +112,46 @@ def threshold_sweep(gt: pl.DataFrame, pred: pl.DataFrame, thresholds=(0.3, 0.4, 
     return {t: score_tracking(gt, pred, iou_threshold=t) for t in thresholds}
 
 
+def shifted_share(pred: pl.DataFrame, gt: pl.DataFrame, k: int, iou_threshold: float = 0.5) -> float:
+    """Share of predicted boxes whose best IoU is at least the threshold when read against shifted ground truth.
+
+    The prediction at frame f is compared with the ground truth labelled f - k (the ground truth's
+    frame column is moved up by k), so positive k means the ground truth reads k frames earlier,
+    the convention of docs/investigation-box-offset.md. A prediction whose shifted frame has no
+    ground truth counts as not matched. k = 0 is the real labelling.
+    """
+    shifted = gt.with_columns((pl.col("frame") + k).alias("frame"))
+    iou = nearest_pairs(pred, shifted)["best_iou"].to_numpy()
+    return float((iou >= iou_threshold).mean()) if len(iou) else 0.0
+
+
+def drift_by_range(pred: pl.DataFrame, gt: pl.DataFrame, n_ranges: int = 5, ks=range(-2, 9),
+                   iou_threshold: float = 0.5) -> list[dict]:
+    """Does the best shift change along the clip? Equal frame ranges over the prediction's frames.
+
+    Each prediction's best IoU is computed once per k; ranges only group those rows. Returns, per
+    range with at least one frame, its first and last frame, the k with the highest share (the lowest k on a tie), that
+    share, and the share at k = 0.
+    """
+    if pred.height == 0:
+        return []
+    edges = np.linspace(pred["frame"].min(), pred["frame"].max() + 1, n_ranges + 1).astype(int)
+    shares = {}                                      # k -> share per range
+    for k in sorted({*ks, 0}):
+        pairs = nearest_pairs(pred, gt.with_columns((pl.col("frame") + k).alias("frame")))
+        frames, hit = pairs["frame"].to_numpy(), pairs["best_iou"].to_numpy() >= iou_threshold
+        shares[k] = [float(hit[(frames >= first) & (frames < stop)].mean()) if ((frames >= first) & (frames < stop)).any() else 0.0
+                     for first, stop in zip(edges[:-1], edges[1:])]
+    ranges = []
+    for i, (first, stop) in enumerate(zip(edges[:-1], edges[1:])):
+        if stop <= first:                            # fewer frames than ranges
+            continue
+        best = max(sorted(ks), key=lambda k: shares[k][i])
+        ranges.append({"range": (int(first), int(stop) - 1), "best_k": best,
+                       "share_at_best": shares[best][i], "share_at_zero": shares[0][i]})
+    return ranges
+
+
 def diagnose_clip(run_dir, clip_id: str, seq_dir) -> dict:
     run_dir = Path(run_dir)
     tracks = read_table("tracks", run_dir / clip_id / "tracks.parquet")
@@ -125,6 +165,17 @@ def diagnose_clip(run_dir, clip_id: str, seq_dir) -> dict:
         "detections": summarize(nearest_pairs(detections, gt)),
         "tracks_vs_detections": box_agreement(tracks, detections),
         "sweep": {str(t): {"idf1": c.idf1, "precision": c.precision, "recall": c.recall} for t, c in sweep.items()},
+    }
+
+
+def shift_clip(run_dir, clip_id: str, seq_dir, n_ranges: int = 5, ks=range(-2, 9)) -> dict:
+    """The frame-shift tables for one clip: share at IoU 0.5 for each k, and the drift along the clip."""
+    tracks = read_table("tracks", Path(run_dir) / clip_id / "tracks.parquet")
+    gt = load_mot_ground_truth(seq_dir)
+    return {
+        "clip_id": clip_id,
+        "shifted_share": {str(k): shifted_share(tracks, gt, k) for k in ks},
+        "drift_by_range": drift_by_range(tracks, gt, n_ranges, ks),
     }
 
 

@@ -61,7 +61,8 @@ def run_grid(src_run, out_dir, points: list[ByteTrackSettings], sequences: dict,
         point_dir = out_dir / point.label()
         failed = {clip: message for clip, message in retrack_run(src_run, point_dir, point).items() if message}
         counts, not_scored = score_run(point_dir, sequences, clip_ids)
-        failed.update(not_scored)
+        for clip, message in not_scored.items():
+            failed.setdefault(clip, message)
         total = _pooled(counts)
         records.append({
             "label": point.label(),

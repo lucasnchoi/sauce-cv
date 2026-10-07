@@ -1,7 +1,7 @@
 import pytest
 
 from tracker.analysis.box_offset import (
-    IOU_BINS, box_agreement, nearest_pairs, summarize, threshold_sweep,
+    IOU_BINS, box_agreement, drift_by_range, nearest_pairs, shifted_share, summarize, threshold_sweep,
 )
 from tracker.schemas import from_rows
 
@@ -107,3 +107,46 @@ def test_iou_by_area_tercile_medians():
     assert terciles["small"] == pytest.approx(0.65)     # areas 20, 40: median of 0.5, 0.8
     assert terciles["medium"] == pytest.approx(0.8)     # areas 60, 80: median of 0.6, 1.0
     assert terciles["large"] == pytest.approx(0.5)      # areas 100, 120: median of 0.25, 0.75
+
+
+def moving(positions):
+    """rows: (frame, x position) -> a 10x20 box at that x, one id."""
+    return tracks([(f, 1, (float(x), 0.0, float(x) + 10.0, 20.0)) for f, x in positions])
+
+
+def test_shifted_share_reads_ground_truth_k_frames_earlier():
+    # The box moves 5 px per frame. Predictions are frames 1..20 (x = 5f); the ground truth labelled g
+    # (frames 0..19) holds the box where the prediction has it one frame later, x = 5(g + 1).
+    pred = moving([(f, 5 * f) for f in range(1, 21)])
+    gt = moving([(g, 5 * (g + 1)) for g in range(20)])
+    # k=1: prediction f against ground truth f-1, x = 5f: identical, IoU 1 for all 20.
+    assert shifted_share(pred, gt, 1) == 1.0
+    # k=0: ground truth f sits 5 px right: overlap 5 * 20 = 100, union 200 + 200 - 100 = 300, IoU 1/3 < 0.5 (frame 20 has none).
+    assert shifted_share(pred, gt, 0) == 0.0
+    # k=2 (ground truth f-2 is 5 px left, IoU 1/3) and k=-1 (ground truth f+1 is 10 px right, no overlap).
+    assert shifted_share(pred, gt, 2) == 0.0 and shifted_share(pred, gt, -1) == 0.0
+    # A lower threshold counts the 1/3 overlaps at k=0: frames 1..19 have ground truth, frame 20 does not -> 19/20.
+    assert shifted_share(pred, gt, 0, iou_threshold=0.3) == pytest.approx(19 / 20)
+
+
+def test_a_prediction_whose_shifted_frame_has_no_ground_truth_is_not_matched():
+    # Predictions are frames 0..19 (x = 5f); k=1 reads ground truth f-1, and frame 0 has none: 19 of 20.
+    pred = moving([(f, 5 * f) for f in range(20)])
+    gt = moving([(g, 5 * (g + 1)) for g in range(20)])
+    assert shifted_share(pred, gt, 1) == pytest.approx(19 / 20)
+    assert shifted_share(tracks([]), gt, 1) == 0.0
+
+
+def test_drift_by_range_finds_the_best_shift_in_each_half():
+    # Predictions are frames 10..29 (x = 5f), two ranges of 10 frames: (10, 19) and (20, 29).
+    pred = moving([(f, 5 * f) for f in range(10, 30)])
+    # Ground truth frames 10..19 hold the prediction's own position (aligned, k=0);
+    # frames 19..29 hold it one frame later, x = 5(g + 1) (k=1), as a second id so frame 19 has both.
+    aligned = [(g, 1, (5.0 * g, 0.0, 5.0 * g + 10.0, 20.0)) for g in range(10, 20)]
+    late = [(g, 2, (5.0 * (g + 1), 0.0, 5.0 * (g + 1) + 10.0, 20.0)) for g in range(19, 30)]
+    result = drift_by_range(pred, tracks(aligned + late), n_ranges=2)
+    assert [r["range"] for r in result] == [(10, 19), (20, 29)]
+    # first range: k=0 matches all 10 (share 1.0); any other k is 5+ px off (IoU 1/3 or less) or has no frame
+    assert (result[0]["best_k"], result[0]["share_at_best"], result[0]["share_at_zero"]) == (0, 1.0, 1.0)
+    # second range: k=1 matches all 10 (prediction f against ground truth f-1 at x = 5f); k=0 is 5 px off, IoU 1/3
+    assert (result[1]["best_k"], result[1]["share_at_best"], result[1]["share_at_zero"]) == (1, 1.0, 0.0)
