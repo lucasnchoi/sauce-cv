@@ -15,7 +15,7 @@ from tracker.evaluate.scorecard import build_scorecard, write_scorecard
 from tracker.pipeline import retrack_run, run_details, run_many, score_run
 from tracker.stages.detect_track import ByteTrackSettings
 from tracker.tables import read_table
-from tracker.video import Clip
+from tracker.video import Clip, ClipError
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -168,13 +168,17 @@ def _diagnose(args) -> int:
         if clip_id not in reports:
             print(f"{clip_id}: not drawn ({failed.get(clip_id, 'not in the subset')})")
             continue
-        clip = Clip(sequences[clip_id])
-        tracks = read_table("tracks", args.run / clip_id / "tracks.parquet")
-        detections = read_table("detections", args.run / clip_id / "detections.parquet")
-        gt = load_mot_ground_truth(sequences[clip_id])
-        frames = sorted({int(round(x)) for x in np.linspace(0, clip.info.n_frames - 1, args.frames)})
-        for frame in frames:
-            draw_comparison(clip, frame, gt, tracks, detections, args.out / "frames" / clip_id / f"{frame:06d}.jpg")
+        try:
+            clip = Clip(sequences[clip_id])
+            tracks = read_table("tracks", args.run / clip_id / "tracks.parquet")
+            detections = read_table("detections", args.run / clip_id / "detections.parquet")
+            gt = load_mot_ground_truth(sequences[clip_id])
+            frames = sorted({int(round(x)) for x in np.linspace(0, clip.info.n_frames - 1, args.frames)})
+            for frame in frames:
+                draw_comparison(clip, frame, gt, tracks, detections, args.out / "frames" / clip_id / f"{frame:06d}.jpg")
+        except (ValueError, FileNotFoundError, ClipError) as error:
+            print(f"{clip_id}: not drawn ({error})")
+            continue
         print(f"{clip_id}: drew {len(frames)} frames under {args.out / 'frames' / clip_id}")
     print(f"diagnosed {len(reports)} clips ({len(failed)} not); see {args.out / 'summary.md'}")
     return 0 if reports else 1

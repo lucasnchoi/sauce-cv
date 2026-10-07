@@ -1,5 +1,3 @@
-import numpy as np
-import polars as pl
 import pytest
 
 from tracker.analysis.box_offset import (
@@ -94,3 +92,18 @@ def test_threshold_sweep_counts_the_shifted_box_only_below_half():
     sweep = threshold_sweep(gt, pred)
     assert sweep[0.3].tp == 2 and sweep[0.4].tp == 2 and sweep[0.5].tp == 0
     assert sweep[0.3].idf1 == 1.0 and sweep[0.5].idf1 == 0.0
+
+
+def test_iou_by_area_tercile_medians():
+    # Six predictions of height 10 and widths 2..12 (areas 20..120), each alone in its frame
+    # against a ground-truth box of the same height and the width below; with equal heights
+    # IoU = min(w, g) / max(w, g).
+    widths_and_gt = [(2, 4), (4, 5), (6, 10), (8, 8), (10, 40), (12, 16)]
+    # ious: 0.5, 0.8, 0.6, 1.0, 0.25, 0.75
+    pred = tracks([(f, 1, (0.0, 0.0, float(w), 10.0)) for f, (w, _) in enumerate(widths_and_gt)])
+    gt = tracks([(f, 1, (0.0, 0.0, float(g), 10.0)) for f, (_, g) in enumerate(widths_and_gt)])
+    terciles = summarize(nearest_pairs(pred, gt))["iou_by_area_tercile"]
+    # area cut points 53.3 and 86.7 -> two boxes per tercile
+    assert terciles["small"] == pytest.approx(0.65)     # areas 20, 40: median of 0.5, 0.8
+    assert terciles["medium"] == pytest.approx(0.8)     # areas 60, 80: median of 0.6, 1.0
+    assert terciles["large"] == pytest.approx(0.5)      # areas 100, 120: median of 0.25, 0.75

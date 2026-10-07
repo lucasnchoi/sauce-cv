@@ -167,3 +167,21 @@ def test_diagnose_boxes_writes_json_per_clip_a_summary_and_frames(dataset, tmp_p
     text = (out / "summary.md").read_text()
     assert held[0] in text and held[1] in text
     assert len(list((out / "frames" / held[0]).glob("*.jpg"))) == 2
+
+
+def test_diagnose_boxes_keeps_going_when_one_draw_clip_cannot_be_drawn(dataset, tmp_path, capsys):
+    split = tmp_path / "heldout.json"
+    run_dir = tmp_path / "run"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    main(["run", "--out", str(run_dir), "--dataset", str(dataset), "--split", str(split), "--no-overlay"],
+         make_detector=fake_detector)
+    held = json.loads(split.read_text())["heldout"]
+    # Diagnosis needs only tables and ground truth, so it succeeds; drawing needs the images.
+    (dataset / "mot-challenge-format" / "train" / held[0] / "img1" / "000002.jpg").write_bytes(b"not a jpeg")
+    out = tmp_path / "diag"
+    code = main(["diagnose-boxes", "--run", str(run_dir), "--dataset", str(dataset), "--split", str(split),
+                 "--out", str(out), "--frames", "2", "--draw", held[0], "--draw", held[1]])
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert f"{held[0]}: not drawn" in printed
+    assert f"{held[1]}: drew 2 frames" in printed

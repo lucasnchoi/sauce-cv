@@ -14,7 +14,7 @@ import polars as pl
 from tracker.datasets.mot import load_mot_ground_truth
 from tracker.evaluate.tracking import TrackingCounts, iou_matrix, score_tracking
 from tracker.pipeline import read_clip_info
-from tracker.schemas import SCHEMAS, validate
+from tracker.schemas import validate
 from tracker.tables import read_table
 
 BOX = ["x1", "y1", "x2", "y2"]
@@ -37,7 +37,12 @@ def _by_frame(df: pl.DataFrame) -> dict[int, np.ndarray]:
 
 
 def nearest_pairs(pred: pl.DataFrame, gt: pl.DataFrame) -> pl.DataFrame:
-    """For every predicted box, the ground-truth box in the same frame it overlaps most."""
+    """For every predicted box, the ground-truth box in the same frame it overlaps most.
+
+    Matching is many-to-one: each prediction picks its own best ground-truth box
+    independently. On a row with best_iou == 0 the gt_* columns hold an arbitrary box
+    from that frame (argmax of zeros), so only best_iou and the null deltas mean anything there.
+    """
     pred, gt = _boxes(pred), _boxes(gt)
     gt_frames = _by_frame(gt)
     rows: list[dict] = []
