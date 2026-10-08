@@ -95,6 +95,19 @@ def _parser() -> argparse.ArgumentParser:
     label.add_argument("--start", type=int, default=None,
                        help="position in the displayed order, 0-based (default: the first unlabelled frame)")
     label.add_argument("--render-only", type=Path, help="write the current view to this image and exit (no window)")
+    train_cmd = commands.add_parser("train-rink", help="train the rink keypoint model on the committed labels")
+    train_cmd.add_argument("--labels", type=Path, default=Path("labels/rink_keypoints.parquet"))
+    train_cmd.add_argument("--dataset", type=Path, required=True)
+    train_cmd.add_argument("--split", type=Path, required=True, help="held-out clips are refused as training data")
+    train_cmd.add_argument("--out", type=Path, required=True)
+    train_cmd.add_argument("--epochs", type=int)
+    train_cmd.add_argument("--batch", type=int)
+    train_cmd.add_argument("--lr", type=float)
+    train_cmd.add_argument("--seed", type=int)
+    train_cmd.add_argument("--val-share", type=float)
+    train_cmd.add_argument("--device", choices=["mps", "cpu"])
+    train_cmd.add_argument("--max-epoch-minutes", type=float)
+    train_cmd.add_argument("--no-pretrained", action="store_true", help="start from random weights (tests only)")
     return parser
 
 
@@ -348,6 +361,43 @@ def _label_rink(args) -> int:
     return 0
 
 
+def _train_rink(args) -> int:
+    from tracker.labels.rink_keypoints import load_labels
+    from tracker.rink_model.data import samples_from_labels, split_validation
+    from tracker.rink_model.model import pick_device
+    from tracker.rink_model.train import TrainSettings, TrainingTooSlow, train
+
+    sequences = list_sequences(args.dataset)
+    split = load_split(args.split)
+    labels = load_labels(args.labels)
+    clips = sorted(set(labels["clip_id"].to_list()))
+    held = sorted(set(clips) & set(split["heldout"]))
+    if held:
+        return _usage_error(f"labels include held-out clips, which are never trained on: {held}")
+    missing = sorted(set(clips) - set(sequences))
+    if missing:
+        return _usage_error(f"labels name clips that are not in the dataset: {missing}")
+    overrides = {k: v for k, v in {"epochs": args.epochs, "batch_size": args.batch, "lr": args.lr, "seed": args.seed,
+                                   "val_share": args.val_share, "max_epoch_minutes": args.max_epoch_minutes}.items()
+                 if v is not None}
+    settings = TrainSettings.from_dict({**TrainSettings().as_dict(), **overrides})
+    samples = samples_from_labels(labels)
+    if not samples:
+        return _usage_error(f"{args.labels} holds no frame with a visible keypoint")
+    train_samples, val_samples = split_validation(samples, settings.seed, settings.val_share)
+    device = pick_device(args.device)
+    print(f"training on {len(train_samples)} frames, validating on {len(val_samples)}, device {device}")
+    try:
+        record = train(train_samples, val_samples, sequences, args.out, settings, device, pretrained=not args.no_pretrained)
+    except TrainingTooSlow as error:
+        print(f"tracker: {error}", file=sys.stderr)
+        return 1
+    n_points = record["history"][-1].get("n_points", 0)
+    print(f"best epoch {record['best_epoch']}, PCK@{settings.pck_px:g} {record['best_pck'] if record['best_pck'] is not None else '—'} "
+          f"over {n_points} validation points; weights in {args.out / 'best.pt'}")
+    return 0
+
+
 def main(argv: list[str] | None = None, make_detector=None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "split":
@@ -364,6 +414,8 @@ def main(argv: list[str] | None = None, make_detector=None) -> int:
         return _label_frames(args)
     if args.command == "label-rink":
         return _label_rink(args)
+    if args.command == "train-rink":
+        return _train_rink(args)
     return _score(args)
 
 

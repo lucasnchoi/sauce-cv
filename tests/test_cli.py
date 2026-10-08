@@ -310,3 +310,16 @@ def test_run_json_survives_an_interrupted_run(dataset, tmp_path, monkeypatch):
         main(["run", "--out", str(tmp_path / "run"), "--clip", str(clip), "--no-overlay"], make_detector=fake_detector)
     recorded = json.loads((tmp_path / "run" / "run.json").read_text())
     assert recorded["run"]["detector"] == "fake-detector" and recorded["clips"] == {}
+
+
+def test_train_rink_refuses_labels_from_heldout_clips(dataset, tmp_path, capsys):
+    from tracker.labels.rink_keypoints import frame_rows, load_labels, save_labels, upsert_frame
+    split = tmp_path / "heldout.json"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    held = json.loads(split.read_text())["heldout"][0]
+    labels = upsert_frame(load_labels("/nonexistent"), held, 0, frame_rows(held, 0, {10: (5.0, 5.0)}))
+    save_labels(labels, tmp_path / "labels.parquet", image_size=(64, 48))
+    code = main(["train-rink", "--labels", str(tmp_path / "labels.parquet"), "--dataset", str(dataset),
+                 "--split", str(split), "--out", str(tmp_path / "model"), "--epochs", "1"])
+    assert code == 2 and held in capsys.readouterr().err
+    assert not (tmp_path / "model").exists()
