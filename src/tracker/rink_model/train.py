@@ -179,3 +179,36 @@ def train(train_samples: list[Sample], val_samples: list[Sample], sequences: dic
             raise TrainingTooSlow(record["stopped"])
         write_record()
     return record
+
+
+def check_frames(detector, samples: list[Sample], sequences: dict[str, Path], transform_settings=None) -> dict:
+    """The rink scorer on labelled frames, from this model's detections: PCK plus transform validity and distance."""
+    from tracker.evaluate.rink import FT_TO_M
+    from tracker.rink import template_points
+    from tracker.stages.rink_transform import DEFAULT_RINK_TRANSFORM, fit_frame, project
+
+    settings = transform_settings or DEFAULT_RINK_TRANSFORM
+    template = template_points()
+    clips: dict[str, Clip] = {}
+    predictions: dict[tuple[str, int], np.ndarray] = {}
+    distances: list[float] = []
+    n_valid = 0
+    for sample in samples:
+        if sample.clip_id not in clips:
+            clips[sample.clip_id] = Clip(sequences[sample.clip_id])
+        points = detector.detect(clips[sample.clip_id].read_frame(sample.frame))
+        predictions[(sample.clip_id, sample.frame)] = points
+        found = points[:, 2] > 0
+        H, _, _ = fit_frame(points[found, :2], np.flatnonzero(found), settings)
+        if H is None:
+            continue
+        n_valid += 1
+        visible = sample.points[:, 2] > 0
+        if visible.any():
+            feet = project(H, sample.points[visible, :2])
+            distances.extend((np.linalg.norm(feet - template[visible], axis=1) * FT_TO_M).tolist())
+    result = pck(predictions, samples, 10.0)
+    result.update({"n_frames": len(samples), "n_valid": n_valid,
+                   "valid_share": n_valid / len(samples) if samples else None,
+                   "median_m": float(np.median(distances)) if distances else None, "distances_m": distances})
+    return result

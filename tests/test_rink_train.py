@@ -71,3 +71,19 @@ def test_a_slow_first_epoch_stops_with_the_record_written(make_sequence, tmp_pat
         train(samples, [], {"A_001": seq}, tmp_path / "run", settings, device=torch.device("cpu"), pretrained=False, input_hw=TINY, log=lambda s: None)
     saved = json.loads((tmp_path / "run" / "run.json").read_text())
     assert saved["stopped"].startswith("first epoch took") and len(saved["history"]) == 1
+
+
+def test_check_frames_fits_transforms_from_detections_and_measures_labelled_points(make_sequence):
+    from fakes import FakeKeypointDetector
+    from tracker.rink import template_points
+    from tracker.rink_model.train import check_frames
+    from tracker.stages.rink_transform import project
+    H_true = np.array([[0.25, 0.0, 32.0], [0.0, -0.25, 24.0], [0.0, 0.0, 1.0]])      # feet -> px inside a 64x48 frame
+    ids = [0, 2, 4, 6, 8, 10, 11, 13, 15, 17, 19, 23]
+    px = project(H_true, template_points()[ids])
+    detector = FakeKeypointDetector({k: (float(x), float(y), 0.9) for k, (x, y) in zip(ids, px)})
+    seq = make_sequence(name="A_001", n_frames=2)
+    labelled = Sample("A_001", 1, np.array([[*p, 1.0] if k in ids[:4] else [0.0, 0.0, 0.0] for k, p in enumerate(project(H_true, template_points()))]))
+    result = check_frames(detector, [labelled], {"A_001": seq})
+    assert result["n_frames"] == 1 and result["n_valid"] == 1 and result["valid_share"] == 1.0
+    assert result["n_points"] == 4 and result["median_m"] < 0.05 and result["pck"] == 1.0

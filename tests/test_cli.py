@@ -391,3 +391,17 @@ def test_run_with_missing_weights_fails_every_clip_and_exits_one(dataset, tmp_pa
     assert code == 1
     clips = json.loads((tmp_path / "run" / "run.json").read_text())["clips"]
     assert len(clips) == 2 and all("nope.pt" in (m or "") for m in clips.values())
+
+
+def test_rink_check_reads_the_validation_frames_of_a_training_run(dataset, tmp_path, capsys, monkeypatch):
+    import tracker.cli as cli_module
+    from fakes import FakeKeypointDetector
+    from tracker.labels.rink_keypoints import frame_rows, load_labels, save_labels, upsert_frame
+    monkeypatch.setattr(cli_module, "_keypoint_detector", lambda weights, threshold, device: FakeKeypointDetector({10: (32.0, 24.0, 0.9)}))
+    labels = upsert_frame(load_labels("/nonexistent"), "A_001", 1, frame_rows("A_001", 1, {10: (32.0, 24.0)}))
+    save_labels(labels, tmp_path / "labels.parquet", image_size=(64, 48))
+    (tmp_path / "run.json").write_text(json.dumps({"val_frames": [["A_001", 1]]}))
+    assert main(["rink-check", "--weights", "fake.pt", "--dataset", str(dataset), "--labels", str(tmp_path / "labels.parquet"),
+                 "--frames-from", str(tmp_path / "run.json")]) == 0
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert out["n_frames"] == 1 and out["n_valid"] == 0 and out["pck"] == 1.0          # one point: no transform, but PCK counts the hit

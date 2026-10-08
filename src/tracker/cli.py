@@ -123,6 +123,14 @@ def _parser() -> argparse.ArgumentParser:
     prelabel.add_argument("--subset", choices=["training", "evaluation", "all"], default="all")
     prelabel.add_argument("--threshold", type=float, default=0.3)
     prelabel.add_argument("--device", choices=["mps", "cpu"])
+    check = commands.add_parser("rink-check", help="PCK and transform quality of rink weights on a training run's validation frames")
+    check.add_argument("--weights", type=Path, required=True)
+    check.add_argument("--dataset", type=Path, required=True)
+    check.add_argument("--labels", type=Path, default=Path("labels/rink_keypoints.parquet"))
+    check.add_argument("--frames-from", type=Path, required=True, help="a training run.json; its val_frames are checked")
+    check.add_argument("--split", type=Path, help="when given, held-out clips in the frame list are refused")
+    check.add_argument("--threshold", type=float, default=0.3)
+    check.add_argument("--device", choices=["mps", "cpu"])
     return parser
 
 
@@ -464,6 +472,24 @@ def _prelabel_rink(args) -> int:
     return 0
 
 
+def _rink_check(args) -> int:
+    from tracker.rink_model.data import samples_from_labels
+    from tracker.rink_model.train import check_frames
+
+    wanted = {(c, int(f)) for c, f in json.loads(args.frames_from.read_text())["val_frames"]}
+    if args.split:
+        held = sorted({c for c, _ in wanted} & set(load_split(args.split)["heldout"]))
+        if held:
+            return _usage_error(f"validation frames name held-out clips: {held}")
+    samples = [s for s in samples_from_labels(load_labels(args.labels)) if (s.clip_id, s.frame) in wanted]
+    sequences = list_sequences(args.dataset)
+    detector = _keypoint_detector(args.weights, args.threshold, args.device)
+    result = check_frames(detector, samples, sequences)
+    result.pop("distances_m")
+    print(json.dumps(result))
+    return 0
+
+
 def main(argv: list[str] | None = None, make_detector=None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "split":
@@ -484,6 +510,8 @@ def main(argv: list[str] | None = None, make_detector=None) -> int:
         return _train_rink(args)
     if args.command == "prelabel-rink":
         return _prelabel_rink(args)
+    if args.command == "rink-check":
+        return _rink_check(args)
     return _score(args)
 
 
