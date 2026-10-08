@@ -51,3 +51,18 @@ def test_overlay_into_an_unwritable_place_is_an_error(make_sequence, tmp_path):
     blocker.write_text("x")
     with pytest.raises(ClipError, match="overlay"):
         render_overlay(clip, one_track(2), blocker / "overlay.mp4")
+
+
+def test_overlay_with_positions_adds_the_rink_view_beside_the_frame(make_sequence, tmp_path):
+    from tracker.schemas import H_COLUMNS
+    from tracker.stages.assemble import assemble_tracking
+    clip = Clip(make_sequence(name="GAME_A_001", n_frames=2, width=64, height=48))
+    frames = from_rows("frames", [{"clip_id": "GAME_A_001", "frame": f, "time_s": f / 30, "is_play": True, "segment_id": 0} for f in range(2)])
+    half = dict(zip(H_COLUMNS, [0.5, 0.0, -10.0, 0.0, 0.5, -10.0, 0.0, 0.0, 1.0]))
+    transforms = from_rows("rink_transforms", [{"clip_id": "GAME_A_001", "frame": f, **half, "n_inliers": 8, "reproj_error_px": 1.0, "status": "fitted"} for f in range(2)])
+    tracking = assemble_tracking(one_track(2), frames, transforms)
+    out = tmp_path / "overlay.mp4"
+    render_overlay(clip, one_track(2), out, tracking=tracking, rink_scale=2.0)
+    video = read_video(out)
+    assert len(video) == 2 and video[0].shape[0] == 48 and video[0].shape[1] == 64 + int(200 * 2.0 + 20)
+    assert video[0][:, 64:].mean() > 100                     # the rink view is mostly white ice
