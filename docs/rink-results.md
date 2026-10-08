@@ -11,7 +11,7 @@ From `labels/rink_keypoints.parquet` and `labels/rink_frames.json` (commit d2870
 | Training | 408 | 17 | 2,812 |
 | Evaluation (held-out clips) | 50 | 5 | 346 |
 
-Median 7 visible points per frame (mean 6.9; 3,158 in all). 81 training frames were labelled cold (the Plan 2b-i stop, commit 0419762); the other 377 (327 training + 50 evaluation) were pre-labels from the round-1 heatmap model (`data/runs/prelabel-r1h`, weights `exp-pw10`) corrected by the owner with `label-rink --prelabels`. Before the commit every frame was checked for 33 rows, split membership, no two visible points within 6 px, and a leave-one-out homography on every frame with 5 or more visible points; the owner fixed the 13 duplicate-dot frames and 8 wrong-identity frames that turned up.
+Median 7 visible points per frame (mean 6.9; 3,158 in all). 81 training frames were labelled cold (the Plan 2b-i stop, commit 0419762); the other 377 (327 training + 50 evaluation) were pre-labels from the round-1 heatmap model (`data/runs/prelabel-r1h`, weights `exp-pw10`) corrected by the owner with `label-rink --prelabels`. One caveat on the evaluation set: its 50 frames were pre-filled by the round-1 model before correction, which can anchor the ground truth towards model output; with a 0.15 m median against a 1.0 m bar this cannot change the verdict, but future evaluation labels are best placed cold. Before the commit every frame was checked for 33 rows, split membership, no two visible points within 6 px, and a leave-one-out homography on every frame with 5 or more visible points; the owner fixed the 13 duplicate-dot frames and 8 wrong-identity frames that turned up.
 
 ## Model
 

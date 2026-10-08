@@ -344,7 +344,7 @@ def test_train_rink_refuses_labels_only_on_heldout_clips(dataset, tmp_path, caps
     save_labels(labels, tmp_path / "labels.parquet", image_size=(64, 48))
     code = main(["train-rink", "--labels", str(tmp_path / "labels.parquet"), "--dataset", str(dataset),
                  "--split", str(split), "--out", str(tmp_path / "model"), "--epochs", "1"])
-    assert code == 2 and "no frame with a visible keypoint" in capsys.readouterr().err
+    assert code == 2 and "holds no labelled training frame" in capsys.readouterr().err
     assert not (tmp_path / "model").exists()
 
 
@@ -424,7 +424,16 @@ def test_rink_check_reads_the_validation_frames_of_a_training_run(dataset, tmp_p
     labels = upsert_frame(load_labels("/nonexistent"), "A_001", 1, frame_rows("A_001", 1, {10: (32.0, 24.0)}))
     save_labels(labels, tmp_path / "labels.parquet", image_size=(64, 48))
     (tmp_path / "run.json").write_text(json.dumps({"val_frames": [["A_001", 1]]}))
-    assert main(["rink-check", "--weights", "fake.pt", "--dataset", str(dataset), "--labels", str(tmp_path / "labels.parquet"),
+    (tmp_path / "fake.pt").write_bytes(b"")
+    assert main(["rink-check", "--weights", str(tmp_path / "fake.pt"), "--dataset", str(dataset), "--labels", str(tmp_path / "labels.parquet"),
                  "--frames-from", str(tmp_path / "run.json")]) == 0
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert out["n_frames"] == 1 and out["n_valid"] == 0 and out["pck"] == 1.0          # one point: no transform, but PCK counts the hit
+
+
+def test_rink_check_refuses_missing_files(dataset, tmp_path, capsys):
+    (tmp_path / "fake.pt").write_bytes(b"")
+    code = main(["rink-check", "--weights", str(tmp_path / "fake.pt"), "--dataset", str(dataset), "--labels", str(tmp_path / "labels.parquet"),
+                 "--frames-from", str(tmp_path / "nope.json")])
+    captured = capsys.readouterr()
+    assert code == 2 and "frame list not found" in captured.err + captured.out

@@ -52,7 +52,7 @@ def assemble_tracking(tracks: pl.DataFrame, frames: pl.DataFrame, rink_transform
     tracks = validate(tracks, "tracks").sort("frame", "track_id")
     frames = validate(frames, "frames")
     rink_transforms = validate(rink_transforms, "rink_transforms")
-    base = tracks.join(frames.select("frame", "time_s", "segment_id"), on="frame", how="left")
+    base = tracks.join(frames.select("frame", "time_s", "segment_id"), on="frame", how="left", maintain_order="left")
     if base["time_s"].null_count():
         missing = base.filter(pl.col("time_s").is_null())["frame"].unique().to_list()
         raise ValueError(f"tracks reference frames absent from the frames table: {missing[:5]}")

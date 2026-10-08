@@ -82,6 +82,7 @@ class RinkStages:
         """For run.json. A factory that fails (missing weights) is recorded as unavailable here; the
         per-clip stage still raises, so the run lists every clip's failure with the path."""
         detector = None
+        unavailable = None
         if self.make_keypoint_detector is not None:
             try:
                 detector = self.keypoint_detector()

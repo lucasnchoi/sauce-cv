@@ -88,3 +88,17 @@ def test_rows_are_ordered_by_frame_then_player_and_empty_input_is_valid():
     assert list(zip(table["frame"], table["player_key"])) == [(0, "trk3"), (0, "trk9"), (1, "trk2")]
     empty = assemble_tracking(tracks([]), frames(2), transforms([]))
     assert empty.height == 0 and empty.columns == list(SCHEMAS["tracking"])
+
+
+def test_positions_stay_with_their_own_row_whatever_the_frame_order():
+    def scale(s):
+        return dict(zip(H_COLUMNS, [s, 0.0, 0.0, 0.0, s, 0.0, 0.0, 0.0, 1.0]))
+    table = assemble_tracking(
+        tracks([(5, 1, 10.0), (2, 2, 20.0), (9, 3, 30.0)]), frames(10).reverse(),
+        transforms([(9, scale(0.1), 8, 0.0, "fitted"), (2, scale(0.25), 8, 0.0, "fitted"), (5, scale(0.5), 8, 0.0, "fitted")]),
+        smooth_window=1,
+    )
+    for row in table.to_dicts():
+        s = {5: 0.5, 2: 0.25, 9: 0.1}[row["frame"]]
+        x = {5: 10.0, 2: 20.0, 9: 30.0}[row["frame"]]
+        assert row["x_ft"] == pytest.approx((x + 5.0) * s) and row["y_ft"] == pytest.approx(20.0 * s)

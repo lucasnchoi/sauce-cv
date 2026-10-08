@@ -7,7 +7,7 @@ collinear, median reprojection error under the limit, taken over all the frame's
 points (not just the RANSAC inliers), so a frame where fewer than half the
 points agree is invalid. Then, within a
 segment, fitted transforms are smoothed over a short window and short gaps
-are interpolated; longer gaps and frames outside any segment stay invalid.
+are interpolated; longer gaps stay invalid, and frames outside any segment get no row.
 """
 from __future__ import annotations
 
@@ -116,8 +116,8 @@ def fit_transforms(keypoints: pl.DataFrame, frames: pl.DataFrame, fps: float,
         frame_list = sorted(int(f) for f in segment["frame"].to_list())
         fitted = [f for f in frame_list if raw[f][0] is not None]
         smoothed: dict[int, np.ndarray] = {}
-        for f in fitted:
-            window = [raw[g][0] for g in fitted if abs(g - f) <= half]
+        for i, f in enumerate(fitted):
+            window = [raw[g][0] for g in fitted[max(0, i - half): i + half + 1] if abs(g - f) <= half]
             smoothed[f] = np.mean(window, axis=0)
             smoothed[f] = smoothed[f] / smoothed[f][2, 2]
         for f in frame_list:

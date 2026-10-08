@@ -432,7 +432,7 @@ def _train_rink(args) -> int:
     settings = TrainSettings.from_dict({**TrainSettings().as_dict(), **overrides})
     samples = samples_from_labels(labels)
     if not samples:
-        return _usage_error(f"{args.labels} holds no frame with a visible keypoint")
+        return _usage_error(f"{args.labels} holds no labelled training frame (after dropping held-out clips)")
     train_samples, val_samples = split_validation(samples, settings.seed, settings.val_share)
     device = pick_device(args.device)
     print(f"training on {len(train_samples)} frames, validating on {len(val_samples)}, device {device}")
@@ -481,6 +481,10 @@ def _rink_check(args) -> int:
     from tracker.rink_model.data import samples_from_labels
     from tracker.rink_model.train import check_frames
 
+    if not args.frames_from.is_file():
+        return _usage_error(f"frame list not found: {args.frames_from}")
+    if not args.weights.is_file():
+        return _usage_error(f"weights not found: {args.weights}")
     wanted = {(c, int(f)) for c, f in json.loads(args.frames_from.read_text())["val_frames"]}
     if args.split:
         held = sorted({c for c, _ in wanted} & set(load_split(args.split)["heldout"]))
