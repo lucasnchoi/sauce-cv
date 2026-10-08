@@ -53,6 +53,21 @@ def test_a_bad_fit_is_invalid_but_keeps_its_numbers():
     assert H is None and n_inliers >= 4 and error is not None and error >= 10.0
 
 
+def test_random_pixels_are_invalid():
+    rng = np.random.default_rng(5)
+    for _ in range(10):
+        pixels = rng.uniform([0, 0], [1280, 720], (15, 2))
+        assert fit_frame(pixels, VISIBLE, DEFAULT_RINK_TRANSFORM)[0] is None
+
+
+def test_a_minority_of_correct_points_is_invalid():
+    rng = np.random.default_rng(6)
+    px = rng.uniform([0, 0], [1280, 720], (len(VISIBLE), 2))
+    px[:4] = to_px(FEET[VISIBLE[:4]])
+    H, _, _ = fit_frame(px, VISIBLE, DEFAULT_RINK_TRANSFORM)
+    assert H is None
+
+
 def keypoints_for(frames_points: dict[int, np.ndarray | None], ids=VISIBLE):
     rows = []
     for frame, px in frames_points.items():

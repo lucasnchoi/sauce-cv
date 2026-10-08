@@ -3,7 +3,9 @@
 Fit: RANSAC from the frame's keypoints to the template, in the feet -> pixel
 direction so the RANSAC and validity thresholds are in pixels; the stored H
 is the inverse (pixels -> feet) with h22 = 1. Valid: enough inliers, not
-collinear, median reprojection error under the limit. Then, within a
+collinear, median reprojection error under the limit, taken over all the frame's
+points (not just the RANSAC inliers), so a frame where fewer than half the
+points agree is invalid. Then, within a
 segment, fitted transforms are smoothed over a short window and short gaps
 are interpolated; longer gaps and frames outside any segment stay invalid.
 """
@@ -76,7 +78,7 @@ def fit_frame(pixels: np.ndarray, ids: np.ndarray, settings: RinkTransformSettin
     n_inliers = int(inliers.sum())
     if n_inliers < settings.min_inliers or not _spread(pixels[inliers]) or not _spread(feet[inliers]):
         return None, n_inliers, None
-    error = float(np.median(np.linalg.norm(project(H_ft2px, feet[inliers]) - pixels[inliers], axis=1)))
+    error = float(np.median(np.linalg.norm(project(H_ft2px, feet) - pixels, axis=1)))
     if not np.isfinite(error) or error >= settings.max_reproj_px:
         return None, n_inliers, error
     return invert(H_ft2px), n_inliers, error
