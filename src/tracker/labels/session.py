@@ -10,6 +10,11 @@ from tracker.rink import KEYPOINTS, draw_rink
 
 Point = tuple[float, float] | None
 
+# The order the tool walks the keypoints in and the number it shows for each: left to right across the
+# rink, far side to near side within a column. Stored keypoint ids are unchanged; this is display only.
+LABEL_ORDER: tuple[int, ...] = tuple(k.id for k in sorted(KEYPOINTS, key=lambda k: (k.x_ft, -k.y_ft)))
+POSITION: dict[int, int] = {k: i for i, k in enumerate(LABEL_ORDER)}
+
 
 class LabelSession:
     def __init__(self, frames: list[tuple[str, int]], labels: pl.DataFrame):
@@ -46,12 +51,12 @@ class LabelSession:
         return sum(self.is_labelled(f) for f in self.frames), len(self.frames)
 
     def _first_unset(self, start: int = 0) -> int:
-        ids = [k.id for k in KEYPOINTS]
-        order = ids[start:] + ids[:start]
-        for k in order:
+        """Id of the first unset keypoint at or after label position `start` (wrapping); that position's id if all are set."""
+        start %= len(LABEL_ORDER)
+        for k in LABEL_ORDER[start:] + LABEL_ORDER[:start]:
             if k not in self.current_points:
                 return k
-        return start % len(ids)
+        return LABEL_ORDER[start]
 
     def select(self, keypoint_id: int) -> None:
         if keypoint_id not in {k.id for k in KEYPOINTS}:
@@ -59,10 +64,10 @@ class LabelSession:
         self.keypoint = keypoint_id
 
     def next_keypoint(self) -> None:
-        self.keypoint = (self.keypoint + 1) % len(KEYPOINTS)
+        self.keypoint = LABEL_ORDER[(POSITION[self.keypoint] + 1) % len(LABEL_ORDER)]
 
     def prev_keypoint(self) -> None:
-        self.keypoint = (self.keypoint - 1) % len(KEYPOINTS)
+        self.keypoint = LABEL_ORDER[(POSITION[self.keypoint] - 1) % len(LABEL_ORDER)]
 
     def jump_to(self, index: int) -> None:
         """Go to a frame position (clamped) and start at its first unset keypoint."""
@@ -98,7 +103,7 @@ class LabelSession:
             self.current_points[self.keypoint] = value
         self._edited.add(self.current)
         if value is not ...:
-            candidate = self._first_unset(self.keypoint + 1)
+            candidate = self._first_unset(POSITION[self.keypoint] + 1)
             if candidate not in self.current_points:
                 self.keypoint = candidate
 
@@ -154,17 +159,19 @@ class LabelSession:
             x, y = int(round(p[0])), int(round(p[1]))
             colour = (0, 0, 255) if k == self.keypoint else (0, 200, 0)
             cv2.circle(out, (x, y), 4, colour, -1)
-            cv2.putText(out, str(k), (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1)
+            cv2.putText(out, str(POSITION[k]), (x + 5, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, colour, 1)
         clip_id, frame = self.current
         done, total = self.progress
         name = KEYPOINTS[self.keypoint].name
         cv2.putText(out, f"{clip_id} f{frame}  [{self.index + 1}/{len(self.frames)}]  labelled {done}/{total}",
                     (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.putText(out, f"keypoint {self.keypoint}: {name}", (8, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1)
+        cv2.putText(out, f"point {POSITION[self.keypoint]}/{len(LABEL_ORDER) - 1}: {name}  (id {self.keypoint})",
+                    (8, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1)
         return out
 
     def legend(self) -> np.ndarray:
         pts = self.current_points
         return draw_rink(highlight=self.keypoint,
                          labelled={k for k, p in pts.items() if p is not None},
-                         not_visible={k for k, p in pts.items() if p is None})
+                         not_visible={k for k, p in pts.items() if p is None},
+                         numbers={k: str(i) for k, i in POSITION.items()})

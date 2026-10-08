@@ -3,7 +3,7 @@ import polars as pl
 import pytest
 
 from tracker.labels.rink_keypoints import frame_rows, load_labels, upsert_frame
-from tracker.labels.session import LabelSession
+from tracker.labels.session import LABEL_ORDER, POSITION, LabelSession
 from tracker.rink import KEYPOINTS, KEYPOINT_BY_NAME
 from tracker.schemas import from_rows
 
@@ -22,10 +22,10 @@ def test_starts_at_the_first_frame_and_keypoint_zero():
 def test_place_sets_the_current_keypoint_and_advances_to_the_next_unset():
     s = fresh()
     s.place(100.0, 200.0)
-    assert s.current_points == {0: (100.0, 200.0)} and s.keypoint == 1
+    assert s.current_points == {0: (100.0, 200.0)} and s.keypoint == LABEL_ORDER[1]
     s.select(10)
     s.mark_not_visible()
-    assert s.current_points[10] is None and s.keypoint == 11
+    assert s.current_points[10] is None and s.keypoint == LABEL_ORDER[POSITION[10] + 1]
     s.select(10); s.place(5.0, 6.0)                        # re-placing overwrites
     assert s.current_points[10] == (5.0, 6.0)
 
@@ -41,11 +41,24 @@ def test_advance_skips_set_keypoints_and_wraps():
     assert s.keypoint == 5
 
 
+def test_label_order_runs_left_to_right_and_far_to_near_and_keys_cycle_through_it():
+    pts = [KEYPOINTS[k] for k in LABEL_ORDER]
+    assert sorted(LABEL_ORDER) == list(range(33))
+    assert [(p.x_ft, -p.y_ft) for p in pts] == sorted((p.x_ft, -p.y_ft) for p in pts)
+    assert [p.name for p in pts[:5]] == ["goal_line_boards_L_far", "goal_post_L_far", "goal_post_L_near",
+                                         "goal_line_boards_L_near", "circle_end_L_far_top"]
+    s = fresh()
+    s.next_keypoint(); s.next_keypoint()
+    assert s.keypoint == LABEL_ORDER[2]
+    s.prev_keypoint(); s.prev_keypoint(); s.prev_keypoint()
+    assert s.keypoint == LABEL_ORDER[-1]
+
+
 def test_undo_reverts_the_last_edit_in_this_frame():
     s = fresh()
     s.place(1.0, 1.0); s.place(2.0, 2.0)
     s.undo()
-    assert s.current_points == {0: (1.0, 1.0)} and s.keypoint == 1
+    assert s.current_points == {0: (1.0, 1.0)} and s.keypoint == LABEL_ORDER[1]
     s.undo(); s.undo()                                     # extra undo is harmless
     assert s.current_points == {}
 
@@ -56,7 +69,7 @@ def test_frame_navigation_is_clamped_and_resets_the_keypoint():
     s.next_frame()
     assert s.current == ("A_001", 9) and s.keypoint == 0
     s.prev_frame()
-    assert s.current == ("A_001", 3) and s.keypoint == 1        # first unset id in this frame
+    assert s.current == ("A_001", 3) and s.keypoint == LABEL_ORDER[1]   # first unset point in this frame
     s.prev_frame()
     assert s.current == ("A_001", 3)
     s.next_frame(); s.next_frame(); s.next_frame()

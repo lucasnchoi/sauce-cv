@@ -102,7 +102,9 @@ HIGHLIGHT = (0, 0, 255)
 
 
 def draw_rink(scale: float = 4.0, margin: int = 20, highlight: int | None = None,
-              labelled: set[int] = frozenset(), not_visible: set[int] = frozenset()) -> np.ndarray:
+              labelled: set[int] = frozenset(), not_visible: set[int] = frozenset(),
+              numbers: dict[int, str] | None = None) -> np.ndarray:
+    """Top-down rink with the keypoints marked; `numbers` (keypoint id -> text) writes a label beside each point."""
     width = int(round(RINK_LENGTH_FT * scale + 2 * margin))
     height = int(round(RINK_WIDTH_FT * scale + 2 * margin))
     image = np.full((height, width, 3), WHITE, dtype=np.uint8)
@@ -144,4 +146,9 @@ def draw_rink(scale: float = 4.0, margin: int = 20, highlight: int | None = None
             cv2.line(image, (p[0] - 3, p[1] - 3), (p[0] + 3, p[1] + 3), DARK, 1)
         else:
             cv2.circle(image, p, max(3, int(scale)), GREY, 1)
+        if numbers and k.id in numbers:
+            colour = HIGHLIGHT if k.id == highlight else BLACK
+            dx = 5 if k.x_ft <= 0 else -6 - 7 * len(numbers[k.id])   # keep the text off the lines on each half
+            cv2.putText(image, numbers[k.id], (p[0] + dx, p[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, WHITE, 3)
+            cv2.putText(image, numbers[k.id], (p[0] + dx, p[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, colour, 1)
     return image

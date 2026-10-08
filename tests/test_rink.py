@@ -67,3 +67,9 @@ def test_draw_rink_highlights_and_marks_points():
     cx, cy = rink_to_px(0, 0, 4.0, 20)
     assert marked[cy, cx].tolist() != plain[cy, cx].tolist()   # highlight changes the centre dot
     assert marked[cy, cx][2] > 150                              # red
+
+
+def test_draw_rink_numbers_write_text_beside_the_points():
+    plain = draw_rink()
+    numbered = draw_rink(numbers={k.id: str(k.id) for k in KEYPOINTS})
+    assert numbered.shape == plain.shape and (numbered != plain).any()
