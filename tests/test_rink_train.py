@@ -1,11 +1,12 @@
 import json
+import math
 
 import numpy as np
 import pytest
 import torch
 
 from tracker.rink_model.data import Sample
-from tracker.rink_model.train import TrainSettings, TrainingTooSlow, pck, predict_samples, train
+from tracker.rink_model.train import TrainSettings, TrainingTooSlow, heatmap_loss, pck, predict_samples, train
 
 TINY = (32, 64)
 
@@ -31,9 +32,17 @@ def test_pck_counts_hits_within_the_limit_and_unpredicted_points_as_misses():
 def test_settings_round_trip_and_cast():
     s = TrainSettings.from_dict({"epochs": "3", "lr": "0.01"})
     assert s.epochs == 3 and s.lr == 0.01 and s.batch_size == 4
+    assert TrainSettings.from_dict({"pos_weight": "5"}).pos_weight == 5.0
     assert TrainSettings.from_dict(TrainSettings().as_dict()) == TrainSettings()
     with pytest.raises(ValueError, match="unknown"):
         TrainSettings.from_dict({"bogus": 1})
+
+
+def test_heatmap_loss_weights_positive_cells():
+    logits = torch.zeros(1, 1, 2, 2)
+    targets = torch.tensor([[[[1.0, 0.0], [0.0, 0.0]]]])
+    assert heatmap_loss(logits, targets, pos_weight=0.0).item() == pytest.approx(math.log(2))
+    assert heatmap_loss(logits, targets, pos_weight=3.0).item() == pytest.approx(math.log(2) * (1 + 3 + 1 + 1 + 1) / 4)
 
 
 def test_one_tiny_epoch_writes_weights_and_a_run_record(make_sequence, tmp_path):

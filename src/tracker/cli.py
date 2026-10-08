@@ -110,6 +110,7 @@ def _parser() -> argparse.ArgumentParser:
     train_cmd.add_argument("--epochs", type=int)
     train_cmd.add_argument("--batch", type=int)
     train_cmd.add_argument("--lr", type=float)
+    train_cmd.add_argument("--pos-weight", type=float)
     train_cmd.add_argument("--seed", type=int)
     train_cmd.add_argument("--val-share", type=float)
     train_cmd.add_argument("--device", choices=["mps", "cpu"])
@@ -421,7 +422,7 @@ def _train_rink(args) -> int:
     missing = sorted(set(clips) - set(sequences))
     if missing:
         return _usage_error(f"labels name clips that are not in the dataset: {missing}")
-    overrides = {k: v for k, v in {"epochs": args.epochs, "batch_size": args.batch, "lr": args.lr, "seed": args.seed,
+    overrides = {k: v for k, v in {"epochs": args.epochs, "batch_size": args.batch, "lr": args.lr, "pos_weight": args.pos_weight, "seed": args.seed,
                                    "val_share": args.val_share, "max_epoch_minutes": args.max_epoch_minutes}.items()
                  if v is not None}
     settings = TrainSettings.from_dict({**TrainSettings().as_dict(), **overrides})

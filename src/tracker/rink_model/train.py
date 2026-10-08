@@ -36,6 +36,7 @@ class TrainSettings:
     pck_px: float = 10.0
     max_epoch_minutes: float = 10.0
     vis_threshold: float = 0.5
+    pos_weight: float = 50.0
 
     def as_dict(self) -> dict:
         return {f.name: getattr(self, f.name) for f in fields(self)}
@@ -75,10 +76,10 @@ def pck(predictions: dict[tuple[str, int], np.ndarray], samples: list[Sample], p
 POS_WEIGHT = 50.0
 
 
-def heatmap_loss(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+def heatmap_loss(logits: torch.Tensor, targets: torch.Tensor, pos_weight: float = POS_WEIGHT) -> torch.Tensor:
     """Binary cross-entropy per cell, weighted up where the target is positive so the peaks are not drowned by zeros."""
     per_cell = torch.nn.functional.binary_cross_entropy_with_logits(logits, targets, reduction="none")
-    return (per_cell * (1.0 + POS_WEIGHT * targets)).mean()
+    return (per_cell * (1.0 + pos_weight * targets)).mean()
 
 
 def visibility(predictions: dict[tuple[str, int], np.ndarray], samples: list[Sample], threshold: float) -> dict:
@@ -153,7 +154,7 @@ def train(train_samples: list[Sample], val_samples: list[Sample], sequences: dic
         total = 0.0
         for images, targets in loader:
             images, targets = images.to(device), targets.to(device)
-            loss = heatmap_loss(model(images), targets)
+            loss = heatmap_loss(model(images), targets, settings.pos_weight)
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
