@@ -6,7 +6,7 @@ import pytest
 pytestmark = pytest.mark.slow
 
 DATASET = Path("data/raw/VIP-HTD/mot-challenge-format")
-WEIGHTS = Path("data/models/rink-keypoints/r1/best.pt")
+WEIGHTS = Path("data/models/rink-keypoints/exp-pw10/best.pt")
 
 
 def test_trained_rink_model_finds_points_on_a_real_frame():

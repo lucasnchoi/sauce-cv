@@ -27,7 +27,7 @@ PACKAGES = ["torch", "torchvision", "polars", "opencv-python", "numpy"]
 
 @dataclass(frozen=True)
 class TrainSettings:
-    epochs: int = 60
+    epochs: int = 100
     batch_size: int = 4
     lr: float = 1e-3
     weight_decay: float = 1e-4
@@ -36,7 +36,7 @@ class TrainSettings:
     pck_px: float = 10.0
     max_epoch_minutes: float = 10.0
     vis_threshold: float = 0.5
-    pos_weight: float = 50.0
+    pos_weight: float = 10.0
 
     def as_dict(self) -> dict:
         return {f.name: getattr(self, f.name) for f in fields(self)}
@@ -73,7 +73,7 @@ def pck(predictions: dict[tuple[str, int], np.ndarray], samples: list[Sample], p
             "n_points": n_points, "n_predicted": len(errors)}
 
 
-POS_WEIGHT = 50.0
+POS_WEIGHT = 10.0
 
 
 def heatmap_loss(logits: torch.Tensor, targets: torch.Tensor, pos_weight: float = POS_WEIGHT) -> torch.Tensor:
