@@ -97,3 +97,11 @@ def test_label_table_allows_null_pixels_only_with_visible_false_at_schema_level(
     assert validate(from_rows("rink_keypoint_labels", [row]), "rink_keypoint_labels").height == 1
     with pytest.raises(SchemaError, match="visible"):
         validate(from_rows("rink_keypoint_labels", [{**row, "visible": None}]), "rink_keypoint_labels")
+
+
+def test_rink_transforms_table_restricts_status_and_allows_null_h():
+    from tracker.schemas import H_COLUMNS
+    row = {"clip_id": "c", "frame": 0, **{h: None for h in H_COLUMNS}, "n_inliers": 0, "reproj_error_px": None, "status": "invalid"}
+    assert validate(from_rows("rink_transforms", [row]), "rink_transforms").height == 1
+    with pytest.raises(SchemaError, match="status"):
+        validate(from_rows("rink_transforms", [{**row, "status": "guessed"}]), "rink_transforms")

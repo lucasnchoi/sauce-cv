@@ -81,6 +81,17 @@ RINK_KEYPOINT_LABELS = {
     "visible": pl.Boolean,
 }
 
+H_COLUMNS = ["h00", "h01", "h02", "h10", "h11", "h12", "h20", "h21", "h22"]
+
+RINK_TRANSFORMS = {
+    "clip_id": pl.String,
+    "frame": pl.Int64,
+    **{h: pl.Float64 for h in H_COLUMNS},
+    "n_inliers": pl.Int64,
+    "reproj_error_px": pl.Float64,
+    "status": pl.String,
+}
+
 SCHEMAS = {
     "frames": FRAMES,
     "detections": DETECTIONS,
@@ -88,6 +99,7 @@ SCHEMAS = {
     "tracking": TRACKING,
     "keypoints": KEYPOINTS,
     "rink_keypoint_labels": RINK_KEYPOINT_LABELS,
+    "rink_transforms": RINK_TRANSFORMS,
 }
 
 # Columns that may never be null.
@@ -98,6 +110,7 @@ REQUIRED = {
     "tracking": ["clip_id", "frame", "time_s", "entity", "position_status", "position_conf"],
     "keypoints": list(KEYPOINTS),
     "rink_keypoint_labels": ["clip_id", "frame", "keypoint_id", "visible"],
+    "rink_transforms": ["clip_id", "frame", "n_inliers", "status"],
 }
 
 # Columns restricted to a fixed set of values. Nulls are checked by REQUIRED.
@@ -111,6 +124,7 @@ ALLOWED_VALUES = {
     },
     "keypoints": {"keypoint_id": set(KEYPOINT_IDS)},
     "rink_keypoint_labels": {"keypoint_id": set(KEYPOINT_IDS)},
+    "rink_transforms": {"status": {"fitted", "interpolated", "invalid"}},
 }
 
 
