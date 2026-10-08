@@ -348,3 +348,46 @@ def test_prelabel_rink_with_missing_weights_is_a_usage_error(dataset, tmp_path, 
     code = main(["prelabel-rink", "--weights", str(tmp_path / "nope.pt"), "--dataset", str(dataset),
                  "--frames", str(tmp_path / "f.json"), "--out", str(tmp_path / "p")])
     assert code == 2 and "nope.pt" in capsys.readouterr().err
+
+
+def test_run_with_rink_weights_records_the_stages_and_scores_the_rink(dataset, tmp_path, capsys, monkeypatch):
+    import tracker.cli as cli_module
+    from fakes import FakeKeypointDetector
+    from tracker.labels.rink_keypoints import frame_rows, load_labels, save_labels, upsert_frame
+    points = {k: (float(5 + 3 * k), float(10 + (k % 5) * 6), 0.9) for k in (0, 2, 4, 6, 8, 10, 11, 13, 15, 17, 19, 23)}
+    monkeypatch.setattr(cli_module, "_keypoint_detector", lambda weights, threshold, device: FakeKeypointDetector(points))
+    split = tmp_path / "heldout.json"
+    run_dir = tmp_path / "run"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    code = main(["run", "--out", str(run_dir), "--dataset", str(dataset), "--split", str(split), "--no-overlay",
+                 "--rink-weights", "fake.pt", "--set", "footage.min_segment_s=0", "--set", "rink.max_reproj_px=50"], make_detector=fake_detector)
+    assert code == 0
+    recorded = json.loads((run_dir / "run.json").read_text())["run"]
+    assert recorded["footage_filter"]["settings"]["min_segment_s"] == 0.0 and recorded["rink_transform"]["max_reproj_px"] == 50.0
+    assert recorded["rink_keypoints"] == {"name": "fake-keypoints", "weights": "fake.pt", "threshold": 0.3}
+    held = json.loads(split.read_text())["heldout"][0]
+    labels = upsert_frame(load_labels("/nonexistent"), held, 1, frame_rows(held, 1, {10: points[10][:2]}))
+    save_labels(labels, tmp_path / "labels.parquet", image_size=(64, 48))
+    assert main(["score", "--run", str(run_dir), "--dataset", str(dataset), "--split", str(split), "--labels", str(tmp_path / "labels.parquet")]) == 0
+    card = json.loads((run_dir / "scorecard.json").read_text())
+    assert card["rink"]["per_clip"][held]["n_labelled_frames"] == 1 and "rink median" in capsys.readouterr().out
+
+
+def test_run_without_weights_uses_passthrough_and_score_without_labels_has_no_rink_section(dataset, tmp_path, capsys):
+    split = tmp_path / "heldout.json"
+    run_dir = tmp_path / "run"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    assert main(["run", "--out", str(run_dir), "--dataset", str(dataset), "--split", str(split), "--no-overlay"], make_detector=fake_detector) == 0
+    assert json.loads((run_dir / "run.json").read_text())["run"]["footage_filter"]["mode"] == "passthrough"
+    assert main(["score", "--run", str(run_dir), "--dataset", str(dataset), "--split", str(split), "--labels", str(tmp_path / "none.parquet")]) == 0
+    assert "rink" not in json.loads((run_dir / "scorecard.json").read_text())
+
+
+def test_run_with_missing_weights_fails_every_clip_and_exits_one(dataset, tmp_path, capsys):
+    split = tmp_path / "heldout.json"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    code = main(["run", "--out", str(tmp_path / "run"), "--dataset", str(dataset), "--split", str(split), "--no-overlay",
+                 "--rink-weights", str(tmp_path / "nope.pt")], make_detector=fake_detector)
+    assert code == 1
+    clips = json.loads((tmp_path / "run" / "run.json").read_text())["clips"]
+    assert len(clips) == 2 and all("nope.pt" in (m or "") for m in clips.values())

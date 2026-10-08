@@ -1,7 +1,9 @@
 import pytest
 
 from fakes import FakeDetector, FakeTrackerFactory
-from tracker.pipeline import StageError, run_clip, run_details, run_many, score_run
+from tracker.pipeline import StageError, retrack_run, run_clip, run_details, run_many, score_run
+from tracker.stages.detect_track import ByteTrackSettings
+from tracker.stages.footage_filter import FootageFilterSettings
 from tracker.schemas import from_rows
 from tracker.tables import read_table, write_table
 
@@ -228,7 +230,83 @@ def test_score_rink_run_reads_each_clip_and_names_a_missing_transforms_table(mak
     identity = dict(zip(H_COLUMNS, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]))
     write_table(from_rows("rink_transforms", [{"clip_id": "GAME_A_001", "frame": f, **identity, "n_inliers": 8, "reproj_error_px": 1.0, "status": "fitted"} for f in range(3)]),
                 "rink_transforms", run_dir / "GAME_A_001" / "rink_transforms.parquet")
+    (run_dir / "GAME_A_002" / "rink_transforms.parquet").unlink()      # run_clip always writes it; remove to test the missing case
     labels = upsert_frame(load_labels("/nonexistent"), "GAME_A_001", 1, frame_rows("GAME_A_001", 1, {10: (0.0, 0.0)}))
     counts, failed = score_rink_run(run_dir, ["GAME_A_001", "GAME_A_002"], labels)
     assert counts["GAME_A_001"].n_points == 1 and counts["GAME_A_001"].valid_share == 1.0
     assert "GAME_A_002" in failed and "rink_transforms.parquet" in failed["GAME_A_002"]
+
+
+from fakes import FakeKeypointDetector
+from tracker.pipeline import RinkStages
+
+RINK_POINTS = {k: (float(5 + 3 * k), float(10 + (k % 5) * 6), 0.9) for k in (0, 2, 4, 6, 8, 10, 11, 13, 15, 17, 19, 23)}
+
+
+def test_run_clip_with_rink_stages_writes_keypoints_frames_transforms_and_positions(make_sequence, tmp_path):
+    seq = make_sequence(name="GAME_A_001", n_frames=3)
+    detector = FakeKeypointDetector(RINK_POINTS)
+    rink = RinkStages(make_keypoint_detector=lambda: detector, footage_filter=FootageFilterSettings(min_segment_s=0.0, bridge_gap_s=0.0))
+    run_clip(seq, tmp_path / "run", FakeDetector([BOX]), FakeTrackerFactory(), overlay=True, rink=rink)
+    out = tmp_path / "run" / "GAME_A_001"
+    assert read_table("keypoints", out / "keypoints.parquet").height == 3 * len(RINK_POINTS)
+    frames = read_table("frames", out / "frames.parquet")
+    assert frames["is_play"].all()
+    transforms = read_table("rink_transforms", out / "rink_transforms.parquet")
+    assert transforms.height == 3 and set(transforms["status"].to_list()) <= {"fitted", "invalid"}
+    tracking = read_table("tracking", out / "tracking.parquet")
+    assert set(tracking["position_status"].to_list()) <= {"observed", "interpolated", "missing"}
+    assert (out / "overlay.mp4").stat().st_size > 0 and detector.calls == 3
+
+
+def test_a_clip_with_no_play_frames_still_succeeds_with_everything_missing(make_sequence, tmp_path):
+    """Review Focus 4."""
+    seq = make_sequence(name="GAME_A_001", n_frames=3)
+    rink = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector({10: (5.0, 5.0, 0.9)}))     # one point: never play
+    clip_id = run_clip(seq, tmp_path / "run", FakeDetector([BOX]), FakeTrackerFactory(), overlay=False, rink=rink)
+    out = tmp_path / "run" / clip_id
+    frames = read_table("frames", out / "frames.parquet")
+    assert not frames["is_play"].any()
+    assert read_table("rink_transforms", out / "rink_transforms.parquet").height == 0
+    assert read_table("detections", out / "detections.parquet").height == 0
+    assert read_table("tracking", out / "tracking.parquet").height == 0
+
+
+def test_passthrough_mode_ignores_the_keypoint_rule_but_still_fits_transforms(make_sequence, tmp_path):
+    seq = make_sequence(name="GAME_A_001", n_frames=2)
+    rink = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector({10: (5.0, 5.0, 0.9)}), footage_mode="passthrough")
+    run_clip(seq, tmp_path / "run", FakeDetector([BOX]), FakeTrackerFactory(), overlay=False, rink=rink)
+    out = tmp_path / "run" / "GAME_A_001"
+    assert read_table("frames", out / "frames.parquet")["is_play"].all()
+    assert read_table("rink_transforms", out / "rink_transforms.parquet")["status"].to_list() == ["invalid", "invalid"]
+
+
+def test_missing_weights_fail_the_keypoint_stage_on_every_clip_with_the_path(make_sequence, tmp_path):
+    """Review Focus 5."""
+    def no_weights():
+        raise FileNotFoundError("rink keypoint weights not found at /models/nope.pt")
+    a = make_sequence(name="GAME_A_001", n_frames=2)
+    b = make_sequence(name="GAME_A_002", n_frames=2)
+    results = run_many([a, b], tmp_path / "run", FakeDetector([BOX]), FakeTrackerFactory(), overlay=False, rink=RinkStages(make_keypoint_detector=no_weights))
+    assert set(results) == {"GAME_A_001", "GAME_A_002"}
+    assert all("rink keypoints" in m and "/models/nope.pt" in m for m in results.values())
+
+
+def test_run_details_record_the_rink_settings(tmp_path):
+    rink = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector({}), footage_filter=FootageFilterSettings(min_keypoints=7))
+    details = run_details(FakeDetector([BOX]), rink=rink)
+    assert details["footage_filter"] == {"mode": "keypoints", "settings": {"min_keypoints": 7, "min_conf": 0.5, "bridge_gap_s": 0.5, "min_segment_s": 1.0}}
+    assert details["rink_transform"]["max_reproj_px"] == 10.0 and details["rink_keypoints"]["name"] == "fake-keypoints"
+    assert run_details(FakeDetector([BOX]))["footage_filter"] == {"mode": "passthrough", "settings": None}
+    assert run_details(FakeDetector([BOX]))["rink_keypoints"] is None
+
+
+def test_retrack_keeps_rink_transforms_and_positions(make_sequence, tmp_path):
+    seq = make_sequence(name="GAME_A_001", n_frames=3)
+    rink = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector(RINK_POINTS), footage_filter=FootageFilterSettings(min_segment_s=0.0))
+    run_clip(seq, tmp_path / "src", FakeDetector([BOX]), FakeTrackerFactory(), overlay=False, rink=rink)
+    retrack_run(tmp_path / "src", tmp_path / "out", ByteTrackSettings())
+    assert read_table("rink_transforms", tmp_path / "out" / "GAME_A_001" / "rink_transforms.parquet").height == 3
+    before = read_table("tracking", tmp_path / "src" / "GAME_A_001" / "tracking.parquet")["position_status"].to_list()
+    after = read_table("tracking", tmp_path / "out" / "GAME_A_001" / "tracking.parquet")["position_status"].to_list()
+    assert set(before) == set(after)      # the real tracker links fewer rows than the fake one; the statuses agree

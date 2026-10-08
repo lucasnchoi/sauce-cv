@@ -68,7 +68,7 @@ class FakeKeypointDetector:
 
     name = "fake-keypoints"
     threshold = 0.3
-    weights_path = "fake"
+    weights_path = "fake.pt"
 
     def __init__(self, points, per_frame=None):
         self._points = points

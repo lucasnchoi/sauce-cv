@@ -8,10 +8,11 @@ from __future__ import annotations
 import json
 import shutil
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
+from typing import Callable
 
 import polars as pl
 
@@ -21,11 +22,14 @@ from tracker.evaluate.tracking import TrackingCounts, score_tracking
 from tracker.overlay import render_overlay
 from tracker.stages.assemble import assemble_tracking
 from tracker.stages.detect_track import DEFAULT_BYTETRACK, ByteTrackSettings, bytetrack_factory, run_detect, run_track
-from tracker.stages.footage_filter import passthrough_frames
+from tracker.schemas import empty
+from tracker.stages.footage_filter import DEFAULT_FOOTAGE_FILTER, FootageFilterSettings, keypoint_frames, passthrough_frames
+from tracker.stages.rink_keypoints import run_keypoints
+from tracker.stages.rink_transform import DEFAULT_RINK_TRANSFORM, RinkTransformSettings, fit_transforms
 from tracker.tables import read_table, write_table
 from tracker.video import Clip, ClipInfo
 
-PACKAGES = ["rfdetr", "trackers", "supervision", "torch", "polars", "opencv-python", "numpy", "scipy"]
+PACKAGES = ["rfdetr", "trackers", "supervision", "torch", "polars", "opencv-python", "numpy", "scipy", "torchvision"]
 
 
 class StageError(RuntimeError):
@@ -58,12 +62,53 @@ def read_clip_info(path) -> ClipInfo:
     return ClipInfo(**json.loads(path.read_text()))
 
 
+@dataclass
+class RinkStages:
+    """Stages 1–3 for a run. The detector is made inside the first clip's stage, so a missing weights file
+    fails that stage (naming the path) instead of the whole command, and the model loads once."""
+
+    make_keypoint_detector: Callable[[], object] | None = None
+    footage_filter: FootageFilterSettings = DEFAULT_FOOTAGE_FILTER
+    footage_mode: str = "keypoints"
+    rink_transform: RinkTransformSettings = DEFAULT_RINK_TRANSFORM
+    _detector: object = field(default=None, repr=False)
+
+    def keypoint_detector(self):
+        if self._detector is None and self.make_keypoint_detector is not None:
+            self._detector = self.make_keypoint_detector()
+        return self._detector
+
+    def details(self) -> dict:
+        """For run.json. A factory that fails (missing weights) is recorded as unavailable here; the
+        per-clip stage still raises, so the run lists every clip's failure with the path."""
+        detector = None
+        if self.make_keypoint_detector is not None:
+            try:
+                detector = self.keypoint_detector()
+            except Exception as error:          # noqa: BLE001 - recorded, and raised again by the stage
+                detector = None
+                unavailable = {"name": "unavailable", "weights": None, "threshold": None, "error": str(error)}
+        uses_rule = detector is not None and self.footage_mode == "keypoints"
+        if detector is None and self.make_keypoint_detector is not None:
+            rink_keypoints = unavailable
+        elif detector is None:
+            rink_keypoints = None
+        else:
+            rink_keypoints = {"name": detector.name, "weights": str(detector.weights_path), "threshold": detector.threshold}
+        return {
+            "rink_keypoints": rink_keypoints,
+            "footage_filter": {"mode": "keypoints" if uses_rule else "passthrough",
+                               "settings": self.footage_filter.as_dict() if uses_rule else None},
+            "rink_transform": self.rink_transform.as_dict(),
+        }
+
+
 def _clip_id_of(path: Path) -> str:
     return path.name if path.is_dir() or not path.suffix else path.stem
 
 
 def run_clip(clip_path, run_dir, detector, tracker_factory=bytetrack_factory,
-             fps: float | None = None, overlay: bool = True) -> str:
+             fps: float | None = None, overlay: bool = True, rink: RinkStages | None = None) -> str:
     clip_path = Path(clip_path)
     fallback_id = _clip_id_of(clip_path)
     with _stage("open clip", fallback_id):
@@ -71,8 +116,16 @@ def run_clip(clip_path, run_dir, detector, tracker_factory=bytetrack_factory,
         clip_id = clip.info.clip_id
         out = Path(run_dir) / clip_id
         write_clip_info(clip.info, out / "clip.json")
+    keypoints = None
+    if rink is not None and rink.make_keypoint_detector is not None:
+        with _stage("rink keypoints", clip_id):
+            keypoints = run_keypoints(clip, rink.keypoint_detector())
+            write_table(keypoints, "keypoints", out / "keypoints.parquet")
     with _stage("footage filter", clip_id):
-        frames = passthrough_frames(clip.info)
+        if keypoints is not None and rink.footage_mode == "keypoints":
+            frames = keypoint_frames(keypoints, clip.info, rink.footage_filter)
+        else:
+            frames = passthrough_frames(clip.info)
         write_table(frames, "frames", out / "frames.parquet")
     with _stage("detect", clip_id):
         detections = run_detect(clip, frames, detector)
@@ -80,16 +133,21 @@ def run_clip(clip_path, run_dir, detector, tracker_factory=bytetrack_factory,
     with _stage("track", clip_id):
         tracks = run_track(detections, frames, clip.info.fps, tracker_factory)
         write_table(tracks, "tracks", out / "tracks.parquet")
+    with _stage("rink transform", clip_id):
+        settings = rink.rink_transform if rink is not None else DEFAULT_RINK_TRANSFORM
+        transforms = fit_transforms(keypoints, frames, clip.info.fps, settings) if keypoints is not None else empty("rink_transforms")
+        write_table(transforms, "rink_transforms", out / "rink_transforms.parquet")
     with _stage("assemble", clip_id):
-        write_table(assemble_tracking(tracks, clip.info.fps), "tracking", out / "tracking.parquet")
+        tracking = assemble_tracking(tracks, frames, transforms)
+        write_table(tracking, "tracking", out / "tracking.parquet")
     if overlay:
         with _stage("overlay", clip_id):
-            render_overlay(clip, tracks, out / "overlay.mp4")
+            render_overlay(clip, tracks, out / "overlay.mp4", tracking=tracking)
     return clip_id
 
 
 def run_many(clip_paths, run_dir, detector, tracker_factory=bytetrack_factory,
-             fps: float | None = None, overlay: bool = True) -> dict[str, str | None]:
+             fps: float | None = None, overlay: bool = True, rink: RinkStages | None = None) -> dict[str, str | None]:
     paths = [Path(p) for p in clip_paths]
     seen: dict[str, Path] = {}
     for path in paths:
@@ -100,7 +158,7 @@ def run_many(clip_paths, run_dir, detector, tracker_factory=bytetrack_factory,
     results: dict[str, str | None] = {}
     for clip_path in paths:
         try:
-            results[run_clip(clip_path, run_dir, detector, tracker_factory, fps, overlay)] = None
+            results[run_clip(clip_path, run_dir, detector, tracker_factory, fps, overlay, rink)] = None
         except StageError as error:
             results[error.clip_id] = str(error)
     return results
@@ -130,6 +188,8 @@ def retrack_run(src_run, out_run, settings: ByteTrackSettings) -> dict[str, str 
                 info = read_clip_info(clip_dir / "clip.json")
                 frames = read_table("frames", clip_dir / "frames.parquet")
                 detections = read_table("detections", clip_dir / "detections.parquet")
+                transforms_file = clip_dir / "rink_transforms.parquet"
+                transforms = read_table("rink_transforms", transforms_file) if transforms_file.is_file() else empty("rink_transforms")
                 write_clip_info(info, out / "clip.json")
                 for table_file in sorted(clip_dir.glob("*.parquet")):
                     if table_file.name not in ("tracks.parquet", "tracking.parquet"):
@@ -138,7 +198,7 @@ def retrack_run(src_run, out_run, settings: ByteTrackSettings) -> dict[str, str 
                 tracks = run_track(detections, frames, info.fps, factory)
                 write_table(tracks, "tracks", out / "tracks.parquet")
             with _stage("assemble", clip_id):
-                write_table(assemble_tracking(tracks, info.fps), "tracking", out / "tracking.parquet")
+                write_table(assemble_tracking(tracks, frames, transforms), "tracking", out / "tracking.parquet")
             results[clip_id] = None
         except StageError as error:
             results[clip_id] = str(error)
@@ -153,7 +213,7 @@ def retrack_run(src_run, out_run, settings: ByteTrackSettings) -> dict[str, str 
     return results
 
 
-def run_details(detector, tracker_settings: ByteTrackSettings = DEFAULT_BYTETRACK) -> dict:
+def run_details(detector, tracker_settings: ByteTrackSettings = DEFAULT_BYTETRACK, rink: RinkStages | None = None) -> dict:
     versions = {}
     for package in PACKAGES:
         try:
@@ -170,7 +230,7 @@ def run_details(detector, tracker_settings: ByteTrackSettings = DEFAULT_BYTETRAC
             "settings": tracker_settings.as_dict(),
             "frame_rate": "set per clip",
         },
-        "footage_filter": "stand-in: every frame is play",
+        **(rink.details() if rink is not None else RinkStages().details()),
         "packages": versions,
     }
 

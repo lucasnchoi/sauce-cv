@@ -16,8 +16,10 @@ from tracker.labels.rink_keypoints import build_frame_list, interleave_frames, l
 from tracker.labels.session import LabelSession
 from tracker.labels.tool import render_current, run_tool
 from tracker.evaluate.scorecard import build_scorecard, read_fps_by_clip, write_scorecard
-from tracker.pipeline import read_clip_info, retrack_run, run_details, run_many, score_run
+from tracker.pipeline import RinkStages, read_clip_info, retrack_run, run_details, run_many, score_rink_run, score_run
 from tracker.stages.detect_track import ByteTrackSettings
+from tracker.stages.footage_filter import FootageFilterSettings
+from tracker.stages.rink_transform import RinkTransformSettings
 from tracker.tables import read_table, write_table
 from tracker.video import Clip, ClipError
 
@@ -44,7 +46,11 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--fps", type=float)
     run.add_argument("--no-overlay", action="store_true")
     run.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
-                     help="a ByteTrack setting, e.g. --set lost_track_buffer=60 (repeatable)")
+                     help="a setting: ByteTrack KEY=VALUE, or footage.KEY=VALUE / rink.KEY=VALUE for the footage filter and rink transform (repeatable)")
+    run.add_argument("--rink-weights", type=Path, help="rink keypoint weights; enables stages 1-3")
+    run.add_argument("--rink-threshold", type=float, default=0.3)
+    run.add_argument("--footage-filter", choices=["keypoints", "passthrough"], default="keypoints")
+    run.add_argument("--device", choices=["mps", "cpu"])
 
     retrack = commands.add_parser("retrack", help="re-link a finished run's detections with other tracker settings")
     retrack.add_argument("--run", type=Path, required=True, help="a run that holds detections.parquet per clip")
@@ -56,6 +62,7 @@ def _parser() -> argparse.ArgumentParser:
     score.add_argument("--dataset", type=Path, required=True)
     score.add_argument("--split", type=Path, required=True)
     score.add_argument("--subset", choices=["heldout", "train"], default="heldout")
+    score.add_argument("--labels", type=Path, default=Path("labels/rink_keypoints.parquet"))
 
     diagnose = commands.add_parser("diagnose-boxes", help="compare tracked boxes, raw detections and ground truth")
     diagnose.add_argument("--run", type=Path, required=True)
@@ -124,20 +131,24 @@ def _usage_error(message: str) -> int:
     return 2
 
 
-def _settings(pairs: list[str]) -> ByteTrackSettings:
-    values = {}
+def _settings(pairs: list[str]) -> tuple[ByteTrackSettings, FootageFilterSettings, RinkTransformSettings]:
+    groups: dict[str, dict] = {"tracker": {}, "footage": {}, "rink": {}}
     for pair in pairs:
         key, sep, value = pair.partition("=")
         if not sep or not key:
             raise ValueError(f"setting '{pair}' is not KEY=VALUE")
-        values[key] = value
-    try:
-        return ByteTrackSettings.from_dict(values)
-    except ValueError as error:
-        bad = next((k for k, v in values.items() if not _looks_numeric(v)), None)
-        if bad is not None:
-            raise ValueError(f"setting '{bad}' needs a number, got '{values[bad]}'") from error
-        raise
+        group, dot, name = key.partition(".")
+        if dot and group in ("footage", "rink"):
+            groups[group][name] = value
+        elif dot:
+            raise ValueError(f"setting '{key}' has an unknown group '{group}'; use footage.NAME or rink.NAME")
+        else:
+            groups["tracker"][key] = value
+    bad = next((k for g in groups.values() for k, v in g.items() if not _looks_numeric(v)), None)
+    if bad is not None:
+        raise ValueError(f"setting '{bad}' needs a number")
+    return (ByteTrackSettings.from_dict(groups["tracker"]), FootageFilterSettings.from_dict(groups["footage"]),
+            RinkTransformSettings.from_dict(groups["rink"]))
 
 
 def _looks_numeric(text: str) -> bool:
@@ -170,20 +181,26 @@ def _run(args, make_detector) -> int:
         return _usage_error("give --clip PATH, or both --dataset DIR and --split FILE")
 
     try:
-        settings = _settings(args.set)
+        settings, footage, rink_settings = _settings(args.set)
     except ValueError as error:
         return _usage_error(str(error))
 
     if make_detector is None:
         from tracker.stages.detect_track import RfDetrPersonDetector as make_detector
     detector = make_detector(args.threshold)
-    details = run_details(detector, settings)
+    rink = RinkStages(
+        make_keypoint_detector=(lambda: _keypoint_detector(args.rink_weights, args.rink_threshold, args.device)) if args.rink_weights else None,
+        footage_filter=footage, footage_mode=args.footage_filter, rink_transform=rink_settings,
+    )
+    if args.rink_weights is None:
+        print("no --rink-weights: footage filter is passthrough and every position is missing")
+    details = run_details(detector, settings, rink)
     # Written first so a run killed part-way still leaves the run details behind.
     args.out.mkdir(parents=True, exist_ok=True)
     run_file = args.out / "run.json"
     run_file.write_text(json.dumps({"run": details, "clips": {}}, indent=2) + "\n")
     try:
-        results = run_many(clip_paths, args.out, detector, settings.factory(), fps=args.fps, overlay=not args.no_overlay)
+        results = run_many(clip_paths, args.out, detector, settings.factory(), fps=args.fps, overlay=not args.no_overlay, rink=rink)
     except ValueError as error:
         return _usage_error(str(error))
     run_file.write_text(json.dumps({"run": details, "clips": results}, indent=2) + "\n")
@@ -194,7 +211,7 @@ def _run(args, make_detector) -> int:
 
 def _retrack(args) -> int:
     try:
-        settings = _settings(args.set)
+        settings = _settings(args.set)[0]
     except ValueError as error:
         return _usage_error(str(error))
     if not args.run.is_dir():
@@ -315,7 +332,13 @@ def _score(args) -> int:
     counts, failed = score_run(args.run, sequences, clip_ids)
     run_file = args.run / "run.json"
     details = json.loads(run_file.read_text())["run"] if run_file.is_file() else {}
-    scorecard = build_scorecard(counts, failed, details, fps_by_clip=read_fps_by_clip(args.run, clip_ids))
+    rink_per_clip = rink_failed = None
+    if args.labels.is_file():
+        rink_per_clip, rink_failed = score_rink_run(args.run, clip_ids, load_labels(args.labels))
+    else:
+        print(f"no label file at {args.labels}: the rink transform is not scored")
+    scorecard = build_scorecard(counts, failed, details, fps_by_clip=read_fps_by_clip(args.run, clip_ids),
+                                rink_per_clip=rink_per_clip, rink_failed=rink_failed)
     write_scorecard(scorecard, args.run)
     overall = scorecard["tracking"]["overall"]
     if overall is None:
@@ -326,6 +349,11 @@ def _score(args) -> int:
         f"recall {overall['recall']:.1%}, IDF1@0.3 {overall['idf1_at_0.3']:.1%} over {len(counts)} clips "
         f"({len(failed)} failed); see {args.run / 'scorecard.md'}"
     )
+    if rink_per_clip is not None and scorecard["rink"]["overall"] is not None:
+        rink = scorecard["rink"]["overall"]
+        median = "—" if rink["median_m"] is None else "{:.2f}".format(rink["median_m"])
+        valid = "—" if rink["valid_share"] is None else "{:.1%}".format(rink["valid_share"])
+        print(f"rink median {median} m, valid {valid} over {len(rink_per_clip)} clips ({len(rink_failed)} without a rink score)")
     return 0
 
 
