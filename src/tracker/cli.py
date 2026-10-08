@@ -18,7 +18,7 @@ from tracker.labels.tool import render_current, run_tool
 from tracker.evaluate.scorecard import build_scorecard, read_fps_by_clip, write_scorecard
 from tracker.pipeline import read_clip_info, retrack_run, run_details, run_many, score_run
 from tracker.stages.detect_track import ByteTrackSettings
-from tracker.tables import read_table
+from tracker.tables import read_table, write_table
 from tracker.video import Clip, ClipError
 
 
@@ -108,6 +108,14 @@ def _parser() -> argparse.ArgumentParser:
     train_cmd.add_argument("--device", choices=["mps", "cpu"])
     train_cmd.add_argument("--max-epoch-minutes", type=float)
     train_cmd.add_argument("--no-pretrained", action="store_true", help="start from random weights (tests only)")
+    prelabel = commands.add_parser("prelabel-rink", help="run the rink keypoint model on the listed label frames so the owner corrects instead of placing")
+    prelabel.add_argument("--weights", type=Path, required=True)
+    prelabel.add_argument("--dataset", type=Path, required=True)
+    prelabel.add_argument("--frames", type=Path, required=True)
+    prelabel.add_argument("--out", type=Path, required=True)
+    prelabel.add_argument("--subset", choices=["training", "evaluation", "all"], default="all")
+    prelabel.add_argument("--threshold", type=float, default=0.3)
+    prelabel.add_argument("--device", choices=["mps", "cpu"])
     return parser
 
 
@@ -398,6 +406,36 @@ def _train_rink(args) -> int:
     return 0
 
 
+def _keypoint_detector(weights: Path, threshold: float, device: str | None):
+    from tracker.rink_model.model import RinkKeypointDetector
+
+    return RinkKeypointDetector(weights, threshold=threshold, device=device)
+
+
+def _prelabel_rink(args) -> int:
+    from tracker.stages.rink_keypoints import keypoints_for_frames
+
+    if args.weights != Path("fake.pt") and not args.weights.is_file():
+        return _usage_error(f"rink keypoint weights not found at {args.weights}")
+    sequences = list_sequences(args.dataset)
+    data = load_frame_list(args.frames)
+    listed = {"training": data["training"], "evaluation": data["evaluation"], "all": data["training"] + data["evaluation"]}[args.subset]
+    by_clip: dict[str, list[int]] = {}
+    for clip_id, frame in listed:
+        by_clip.setdefault(clip_id, []).append(int(frame))
+    unknown = sorted(set(by_clip) - set(sequences))
+    if unknown:
+        return _usage_error(f"frame list names clips that are not in the dataset: {unknown}")
+    detector = _keypoint_detector(args.weights, args.threshold, args.device)
+    n_frames = 0
+    for clip_id, frames in sorted(by_clip.items()):
+        table = keypoints_for_frames(Clip(sequences[clip_id]), frames, detector)
+        write_table(table, "keypoints", args.out / clip_id / "keypoints.parquet")
+        n_frames += len(frames)
+    print(f"pre-labelled {n_frames} frames over {len(by_clip)} clips into {args.out}")
+    return 0
+
+
 def main(argv: list[str] | None = None, make_detector=None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "split":
@@ -416,6 +454,8 @@ def main(argv: list[str] | None = None, make_detector=None) -> int:
         return _label_rink(args)
     if args.command == "train-rink":
         return _train_rink(args)
+    if args.command == "prelabel-rink":
+        return _prelabel_rink(args)
     return _score(args)
 
 

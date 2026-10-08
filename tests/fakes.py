@@ -61,3 +61,24 @@ class FakeClip:
     def frames(self):
         for index in range(self.info.n_frames):
             yield index, np.zeros((self.info.height, self.info.width, 3), dtype=np.uint8)
+
+
+class FakeKeypointDetector:
+    """Returns fixed rink keypoints; per_frame overrides by call index (frame order)."""
+
+    name = "fake-keypoints"
+    threshold = 0.3
+    weights_path = "fake"
+
+    def __init__(self, points, per_frame=None):
+        self._points = points
+        self._per_frame = per_frame or {}
+        self.calls = 0
+
+    def detect(self, image_bgr):
+        chosen = self._per_frame.get(self.calls, self._points)
+        self.calls += 1
+        out = np.zeros((33, 3), dtype=float)
+        for keypoint_id, (x, y, conf) in chosen.items():
+            out[keypoint_id] = (x, y, conf)
+        return out

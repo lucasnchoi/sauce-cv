@@ -323,3 +323,28 @@ def test_train_rink_refuses_labels_from_heldout_clips(dataset, tmp_path, capsys)
                  "--split", str(split), "--out", str(tmp_path / "model"), "--epochs", "1"])
     assert code == 2 and held in capsys.readouterr().err
     assert not (tmp_path / "model").exists()
+
+
+def test_prelabel_rink_writes_keypoints_per_clip_for_the_listed_frames(dataset, tmp_path, capsys, monkeypatch):
+    import tracker.cli as cli_module
+    from fakes import FakeKeypointDetector
+    monkeypatch.setattr(cli_module, "_keypoint_detector", lambda weights, threshold, device: FakeKeypointDetector({10: (5.0, 5.0, 0.9)}))
+    split = tmp_path / "heldout.json"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    frames = tmp_path / "rink_frames.json"
+    main(["label-frames", "--dataset", str(dataset), "--split", str(split), "--out", str(frames), "--per-clip-train", "2", "--per-clip-eval", "1"])
+    out = tmp_path / "prelabel"
+    assert main(["prelabel-rink", "--weights", "fake.pt", "--dataset", str(dataset), "--frames", str(frames), "--out", str(out), "--subset", "all"]) == 0
+    data = json.loads(frames.read_text())
+    clip_id, frame = data["training"][0]
+    assert "pre-labelled" in capsys.readouterr().out
+    from tracker.tables import read_table
+    kp = read_table("keypoints", out / clip_id / "keypoints.parquet")
+    assert set(kp["frame"].to_list()) == {f for c, f in data["training"] if c == clip_id}
+    assert len(list(out.iterdir())) == 7
+
+
+def test_prelabel_rink_with_missing_weights_is_a_usage_error(dataset, tmp_path, capsys):
+    code = main(["prelabel-rink", "--weights", str(tmp_path / "nope.pt"), "--dataset", str(dataset),
+                 "--frames", str(tmp_path / "f.json"), "--out", str(tmp_path / "p")])
+    assert code == 2 and "nope.pt" in capsys.readouterr().err
