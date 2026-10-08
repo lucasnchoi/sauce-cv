@@ -304,9 +304,9 @@ def test_run_details_record_the_rink_settings(tmp_path):
 def test_retrack_keeps_rink_transforms_and_positions(make_sequence, tmp_path):
     seq = make_sequence(name="GAME_A_001", n_frames=3)
     rink = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector(RINK_POINTS), footage_filter=FootageFilterSettings(min_segment_s=0.0))
-    run_clip(seq, tmp_path / "src", FakeDetector([BOX]), FakeTrackerFactory(), overlay=False, rink=rink)
+    run_clip(seq, tmp_path / "src", FakeDetector([BOX]), overlay=False, rink=rink)
     retrack_run(tmp_path / "src", tmp_path / "out", ByteTrackSettings())
     assert read_table("rink_transforms", tmp_path / "out" / "GAME_A_001" / "rink_transforms.parquet").height == 3
     before = read_table("tracking", tmp_path / "src" / "GAME_A_001" / "tracking.parquet")["position_status"].to_list()
     after = read_table("tracking", tmp_path / "out" / "GAME_A_001" / "tracking.parquet")["position_status"].to_list()
-    assert set(before) == set(after)      # the real tracker links fewer rows than the fake one; the statuses agree
+    assert before == after
