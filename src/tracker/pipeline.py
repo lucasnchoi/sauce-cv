@@ -16,6 +16,7 @@ from pathlib import Path
 import polars as pl
 
 from tracker.datasets.mot import load_mot_ground_truth
+from tracker.evaluate.rink import RinkCounts, score_rink
 from tracker.evaluate.tracking import TrackingCounts, score_tracking
 from tracker.overlay import render_overlay
 from tracker.stages.assemble import assemble_tracking
@@ -190,5 +191,20 @@ def score_run(run_dir, sequences: dict[str, Path], clip_ids: list[str], threshol
             truth = load_mot_ground_truth(sequences[clip_id])
             counts[clip_id] = {t: score_tracking(truth, predicted, iou_threshold=t) for t in thresholds}
         except (FileNotFoundError, ValueError, pl.exceptions.PolarsError) as error:   # SchemaError is a ValueError
+            failed[clip_id] = str(error)
+    return counts, failed
+
+
+def score_rink_run(run_dir, clip_ids: list[str], labels: pl.DataFrame) -> tuple[dict[str, RinkCounts], dict[str, str]]:
+    """Rink-transform counts per clip from the run's frames and rink_transforms tables and the committed labels."""
+    counts: dict[str, RinkCounts] = {}
+    failed: dict[str, str] = {}
+    for clip_id in clip_ids:
+        clip_dir = Path(run_dir) / clip_id
+        try:
+            frames = read_table("frames", clip_dir / "frames.parquet")
+            transforms = read_table("rink_transforms", clip_dir / "rink_transforms.parquet")
+            counts[clip_id] = score_rink(labels.filter(pl.col("clip_id") == clip_id), frames, transforms)
+        except (FileNotFoundError, ValueError, pl.exceptions.PolarsError) as error:
             failed[clip_id] = str(error)
     return counts, failed

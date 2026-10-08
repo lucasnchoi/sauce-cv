@@ -13,10 +13,6 @@ def at(counts):
     return {0.5: counts, 0.4: counts, 0.3: counts}
 
 
-def test_the_bar_matches_the_spec():
-    assert BARS == {"tracking_idf1": 0.85}
-
-
 def test_overall_is_pooled_from_counts_not_averaged():
     card = build_scorecard({"A_001": at(GOOD), "B_001": at(POOR)}, failed={}, run={"detector": "x"})
     overall = card["tracking"]["overall"]
@@ -104,8 +100,35 @@ def test_by_frame_rate_pools_per_rate_and_puts_unknown_clips_aside():
 
 
 def test_extra_sections_are_carried_into_the_card_and_markdown(tmp_path):
-    card = build_scorecard({"A_001": at(GOOD)}, failed={}, run={}, sections={"rink": {"overall": {"median_m": 0.7}}})
-    assert card["rink"] == {"overall": {"median_m": 0.7}}
+    card = build_scorecard({"A_001": at(GOOD)}, failed={}, run={}, sections={"extra": {"overall": {"median_m": 0.7}}})
+    assert card["extra"] == {"overall": {"median_m": 0.7}}
     write_scorecard(card, tmp_path)
     text = (tmp_path / "scorecard.md").read_text()
     assert "IDF1@0.4" in text and "By frame rate" in text
+
+
+def test_bars_include_the_rink_bars():
+    assert BARS == {"tracking_idf1": 0.85, "rink_median_m": 1.0, "rink_valid_share": 0.9}
+
+
+def test_rink_section_pools_clips_and_judges_both_bars():
+    from tracker.evaluate.rink import RinkCounts
+    from tracker.evaluate.scorecard import rink_entry
+    good = RinkCounts((0.2, 0.4, 0.6), 100, 95, 10, 10, 0, 0)
+    poor = RinkCounts((1.5, 2.0), 100, 50, 5, 4, 1, 0)
+    card = build_scorecard({"A_001": at(GOOD)}, failed={}, run={}, rink_per_clip={"A_001": good, "B_001": poor}, rink_failed={"C_001": "no rink_transforms.parquet"})
+    rink = card["rink"]
+    assert rink["per_clip"]["A_001"]["meets_bar"] is True and rink["per_clip"]["B_001"]["meets_bar"] is False
+    assert rink["overall"]["median_m"] == 0.6 and rink["overall"]["valid_share"] == pytest.approx(145 / 200)
+    assert rink["overall"]["n_labelled_no_transform"] == 1 and rink["failed_clips"] == {"C_001": "no rink_transforms.parquet"}
+    assert rink_entry(RinkCounts((), 0, 0, 0, 0, 0, 0))["meets_bar"] is False
+    assert "rink" not in build_scorecard({"A_001": at(GOOD)}, failed={}, run={})
+
+
+
+def test_rink_section_is_rendered_in_the_markdown(tmp_path):
+    from tracker.evaluate.rink import RinkCounts
+    card = build_scorecard({"A_001": at(GOOD)}, failed={}, run={}, rink_per_clip={"A_001": RinkCounts((0.3,), 10, 10, 1, 1, 0, 0)})
+    write_scorecard(card, tmp_path)
+    text = (tmp_path / "scorecard.md").read_text()
+    assert "## Rink transform" in text and "0.30 m" in text and "100.0%" in text

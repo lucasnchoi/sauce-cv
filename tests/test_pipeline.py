@@ -216,3 +216,19 @@ def test_score_run_lists_a_corrupt_tracks_table_as_failed(make_sequence, tmp_pat
     (run_dir / "GAME_A_001" / "tracks.parquet").write_bytes(b"garbage")
     counts, failed = score_run(run_dir, {"GAME_A_001": seq}, ["GAME_A_001"])
     assert counts == {} and "GAME_A_001" in failed
+
+
+def test_score_rink_run_reads_each_clip_and_names_a_missing_transforms_table(make_sequence, tmp_path):
+    from tracker.labels.rink_keypoints import frame_rows, load_labels, upsert_frame
+    from tracker.pipeline import score_rink_run
+    from tracker.schemas import H_COLUMNS, from_rows
+    run_dir = tmp_path / "run"
+    run_clip(make_sequence(name="GAME_A_001", n_frames=3), run_dir, FakeDetector([BOX]), FakeTrackerFactory(), overlay=False)
+    run_clip(make_sequence(name="GAME_A_002", n_frames=3), run_dir, FakeDetector([BOX]), FakeTrackerFactory(), overlay=False)
+    identity = dict(zip(H_COLUMNS, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]))
+    write_table(from_rows("rink_transforms", [{"clip_id": "GAME_A_001", "frame": f, **identity, "n_inliers": 8, "reproj_error_px": 1.0, "status": "fitted"} for f in range(3)]),
+                "rink_transforms", run_dir / "GAME_A_001" / "rink_transforms.parquet")
+    labels = upsert_frame(load_labels("/nonexistent"), "GAME_A_001", 1, frame_rows("GAME_A_001", 1, {10: (0.0, 0.0)}))
+    counts, failed = score_rink_run(run_dir, ["GAME_A_001", "GAME_A_002"], labels)
+    assert counts["GAME_A_001"].n_points == 1 and counts["GAME_A_001"].valid_share == 1.0
+    assert "GAME_A_002" in failed and "rink_transforms.parquet" in failed["GAME_A_002"]

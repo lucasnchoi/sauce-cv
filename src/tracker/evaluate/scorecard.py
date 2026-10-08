@@ -11,10 +11,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from tracker.evaluate.rink import RinkCounts
 from tracker.evaluate.tracking import TrackingCounts
 
 # First-version accuracy bars from the spec, section 7.
-BARS = {"tracking_idf1": 0.85}
+BARS = {"tracking_idf1": 0.85, "rink_median_m": 1.0, "rink_valid_share": 0.9}
 MEASURE = 0.5
 EXTRA_THRESHOLDS = (0.4, 0.3)
 
@@ -52,6 +53,21 @@ def _entry(by_threshold: dict[float, TrackingCounts], n_clips: int | None = None
     return entry
 
 
+def rink_entry(counts: RinkCounts, n_clips: int | None = None) -> dict:
+    median, share = counts.median_m, counts.valid_share
+    entry = {
+        "median_m": median, "valid_share": share, "n_points": counts.n_points,
+        "n_play_frames": counts.n_play_frames, "n_valid_play_frames": counts.n_valid_play_frames,
+        "n_labelled_frames": counts.n_labelled_frames, "n_labelled_scored": counts.n_labelled_scored,
+        "n_labelled_no_transform": counts.n_labelled_no_transform, "n_labelled_non_play": counts.n_labelled_non_play,
+        "meets_bar": median is not None and share is not None
+                     and median <= BARS["rink_median_m"] and share >= BARS["rink_valid_share"],
+    }
+    if n_clips is not None:
+        entry["n_clips"] = n_clips
+    return entry
+
+
 def read_fps_by_clip(run_dir, clip_ids) -> dict[str, float]:
     """Frame rate per clip from each clip.json that exists; clips without one are left out."""
     from tracker.pipeline import read_clip_info          # local import: pipeline imports this module's siblings
@@ -65,7 +81,8 @@ def read_fps_by_clip(run_dir, clip_ids) -> dict[str, float]:
 
 
 def build_scorecard(per_clip: dict, failed: dict[str, str], run: dict,
-                    fps_by_clip: dict[str, float] | None = None, sections: dict[str, dict] | None = None) -> dict:
+                    fps_by_clip: dict[str, float] | None = None, sections: dict[str, dict] | None = None,
+                    rink_per_clip: dict[str, RinkCounts] | None = None, rink_failed: dict[str, str] | None = None) -> dict:
     per_clip = _normalise(per_clip)
     overall = _entry(_pool(list(per_clip.values()))) if per_clip else None
     groups: dict[str, list] = {}
@@ -86,6 +103,15 @@ def build_scorecard(per_clip: dict, failed: dict[str, str], run: dict,
         },
         "failed_clips": dict(failed),
     }
+    if rink_per_clip is not None:
+        pooled = None
+        for counts in rink_per_clip.values():
+            pooled = counts if pooled is None else pooled + counts
+        card["rink"] = {
+            "overall": rink_entry(pooled, n_clips=len(rink_per_clip)) if pooled is not None else None,
+            "per_clip": {clip: rink_entry(rink_per_clip[clip]) for clip in sorted(rink_per_clip)},
+            "failed_clips": dict(rink_failed or {}),
+        }
     for name, section in (sections or {}).items():
         card[name] = section
     return card
@@ -93,6 +119,10 @@ def build_scorecard(per_clip: dict, failed: dict[str, str], run: dict,
 
 def _pct(value) -> str:
     return "—" if value is None else f"{value:.1%}"
+
+
+def _metres(value) -> str:
+    return "—" if value is None else f"{value:.2f} m"
 
 
 def _row(name: str, entry: dict) -> str:
@@ -130,8 +160,24 @@ def _markdown(scorecard: dict) -> str:
         lines += ["", "## Clips that failed", ""]
         for clip, message in sorted(scorecard["failed_clips"].items()):
             lines.append(f"- {clip}: {message}")
+    if "rink" in scorecard:
+        rink = scorecard["rink"]
+        lines += ["", "## Rink transform", "",
+                  f"Bars: median distance between projected and labelled rink points of {scorecard['bars']['rink_median_m']:.1f} m or less, "
+                  f"and a valid transform on {scorecard['bars']['rink_valid_share']:.0%} or more of play frames.", ""]
+        if rink["overall"] is None:
+            lines.append("No clip could be scored for the rink transform.")
+        else:
+            lines += ["| Clip | Median | Valid share | Points | Play frames | Labelled | Scored | No transform | Non-play | Meets bar |",
+                      "|---|---|---|---|---|---|---|---|---|---|"]
+            for name, entry in [("**Overall**", rink["overall"])] + list(rink["per_clip"].items()):
+                lines.append(f"| {name} | {_metres(entry['median_m'])} | {_pct(entry['valid_share'])} | {entry['n_points']} | "
+                             f"{entry['n_play_frames']} | {entry['n_labelled_frames']} | {entry['n_labelled_scored']} | "
+                             f"{entry['n_labelled_no_transform']} | {entry['n_labelled_non_play']} | {'yes' if entry['meets_bar'] else 'no'} |")
+        if rink["failed_clips"]:
+            lines += ["", "Clips without a rink score:", ""] + [f"- {c}: {m}" for c, m in sorted(rink["failed_clips"].items())]
     for name, section in scorecard.items():
-        if name in ("run", "bars", "tracking", "failed_clips"):
+        if name in ("run", "bars", "tracking", "failed_clips", "rink"):
             continue
         lines += ["", f"## {name}", "", "```json", json.dumps(section, indent=2), "```"]
     lines += ["", "## Run", "", "```json", json.dumps(scorecard["run"], indent=2), "```", ""]
