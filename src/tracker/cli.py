@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 
 from tracker.analysis.box_offset import NTSC_RATIO, diagnose_clip, draw_comparison, ntsc_fit, shift_clip
 from tracker.analysis.tracker_grid import load_grid, one_factor_grid, run_grid
@@ -105,7 +106,7 @@ def _parser() -> argparse.ArgumentParser:
     train_cmd = commands.add_parser("train-rink", help="train the rink keypoint model on the committed labels")
     train_cmd.add_argument("--labels", type=Path, default=Path("labels/rink_keypoints.parquet"))
     train_cmd.add_argument("--dataset", type=Path, required=True)
-    train_cmd.add_argument("--split", type=Path, required=True, help="held-out clips are refused as training data")
+    train_cmd.add_argument("--split", type=Path, required=True, help="labels on held-out clips are dropped, never trained on")
     train_cmd.add_argument("--out", type=Path, required=True)
     train_cmd.add_argument("--epochs", type=int)
     train_cmd.add_argument("--batch", type=int)
@@ -418,7 +419,10 @@ def _train_rink(args) -> int:
     clips = sorted(set(labels["clip_id"].to_list()))
     held = sorted(set(clips) & set(split["heldout"]))
     if held:
-        return _usage_error(f"labels include held-out clips, which are never trained on: {held}")
+        n_held = labels.filter(pl.col("clip_id").is_in(held)).select("clip_id", "frame").unique().height
+        labels = labels.filter(~pl.col("clip_id").is_in(held))
+        clips = sorted(set(clips) - set(held))
+        print(f"dropping {n_held} labelled frames on held-out clips (never trained on): {held}")
     missing = sorted(set(clips) - set(sequences))
     if missing:
         return _usage_error(f"labels name clips that are not in the dataset: {missing}")

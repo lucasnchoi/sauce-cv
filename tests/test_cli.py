@@ -312,7 +312,30 @@ def test_run_json_survives_an_interrupted_run(dataset, tmp_path, monkeypatch):
     assert recorded["run"]["detector"] == "fake-detector" and recorded["clips"] == {}
 
 
-def test_train_rink_refuses_labels_from_heldout_clips(dataset, tmp_path, capsys):
+def test_train_rink_drops_labels_from_heldout_clips_and_says_how_many(dataset, tmp_path, capsys, monkeypatch):
+    import tracker.rink_model.train as train_module
+    from tracker.labels.rink_keypoints import frame_rows, load_labels, save_labels, upsert_frame
+    split = tmp_path / "heldout.json"
+    main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
+    data = json.loads(split.read_text())
+    held, kept = data["heldout"][0], data["train"][0]
+    labels = load_labels("/nonexistent")
+    for clip_id, frame in ((held, 0), (held, 1), (kept, 0), (kept, 1), (kept, 2)):
+        labels = upsert_frame(labels, clip_id, frame, frame_rows(clip_id, frame, {10: (5.0, 5.0)}))
+    save_labels(labels, tmp_path / "labels.parquet", image_size=(64, 48))
+    seen = {}
+    def fake_train(train_samples, val_samples, sequences, out_dir, settings, device, pretrained=True):
+        seen["clips"] = {s.clip_id for s in train_samples + val_samples}
+        return {"best_epoch": 1, "best_pck": 0.5, "history": [{"n_points": 1}]}
+    monkeypatch.setattr(train_module, "train", fake_train)
+    code = main(["train-rink", "--labels", str(tmp_path / "labels.parquet"), "--dataset", str(dataset),
+                 "--split", str(split), "--out", str(tmp_path / "model"), "--epochs", "1"])
+    out = capsys.readouterr().out
+    assert code == 0 and "dropping 2 labelled frames on held-out clips" in out and held in out
+    assert seen["clips"] == {kept}
+
+
+def test_train_rink_refuses_labels_only_on_heldout_clips(dataset, tmp_path, capsys):
     from tracker.labels.rink_keypoints import frame_rows, load_labels, save_labels, upsert_frame
     split = tmp_path / "heldout.json"
     main(["split", "--dataset", str(dataset), "--out", str(split), "--heldout", "2"])
@@ -321,7 +344,7 @@ def test_train_rink_refuses_labels_from_heldout_clips(dataset, tmp_path, capsys)
     save_labels(labels, tmp_path / "labels.parquet", image_size=(64, 48))
     code = main(["train-rink", "--labels", str(tmp_path / "labels.parquet"), "--dataset", str(dataset),
                  "--split", str(split), "--out", str(tmp_path / "model"), "--epochs", "1"])
-    assert code == 2 and held in capsys.readouterr().err
+    assert code == 2 and "no frame with a visible keypoint" in capsys.readouterr().err
     assert not (tmp_path / "model").exists()
 
 
