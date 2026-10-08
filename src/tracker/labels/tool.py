@@ -15,6 +15,8 @@ KEYS = {
     "left click": "place the current keypoint",
     "left click on the legend": "select that keypoint",
     "right click": "mark the current keypoint not visible",
+    "x": "mark the current keypoint not visible (same as right click)",
+    "a": "accept the frame as it stands (records it without changing any point)",
     "]": "next keypoint", "[": "previous keypoint",
     "n": "next frame", "p": "previous frame", "g": "jump to the next unlabelled frame",
     "u": "undo the last edit in this frame", "c": "clear the current keypoint",
@@ -104,6 +106,8 @@ def run_tool(session: LabelSession, sequences: dict[str, Path], labels_path, ima
             elif key == ord("p"): session.prev_frame(); save()
             elif key == ord("u"): session.undo()
             elif key == ord("c"): session.clear_current()
+            elif key == ord("x"): session.mark_not_visible()
+            elif key == ord("a"): session.accept()
             elif key == ord("g"):
                 if not session.next_unlabelled():
                     print("every frame is labelled")

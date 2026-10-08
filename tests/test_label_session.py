@@ -132,6 +132,21 @@ def test_prelabels_fill_an_untouched_starting_frame():
     assert not s.is_labelled(("A_001", 3))
 
 
+def test_accept_records_a_prelabelled_frame_unchanged_and_is_undoable():
+    s = fresh()
+    pre = from_rows("keypoints", [
+        {"clip_id": "A_001", "frame": 3, "keypoint_id": 0, "x_px": 12.0, "y_px": 34.0, "conf": 0.9},
+    ])
+    s.load_prelabels(pre)
+    s.accept()
+    assert s.is_labelled(("A_001", 3)) and s.progress == (1, 3)
+    table = s.frame_table()
+    assert table.height == 33
+    assert table.filter(pl.col("visible")).select("keypoint_id", "x_px", "y_px").rows() == [(0, 12.0, 34.0)]
+    s.undo()
+    assert not s.is_labelled(("A_001", 3)) and s.points[("A_001", 3)] == {0: (12.0, 34.0)}
+
+
 def test_start_at_first_unlabelled_skips_labelled_frames_and_falls_back_to_zero():
     s = fresh()
     s.start_at_first_unlabelled()

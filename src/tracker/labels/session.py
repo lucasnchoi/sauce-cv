@@ -111,6 +111,11 @@ class LabelSession:
     def clear_current(self) -> None:
         self._edit(...)
 
+    def accept(self) -> None:
+        """Record the frame as it stands (its suggestions included) without changing any point; undoable."""
+        self._history.setdefault(self.current, []).append((dict(self.current_points), self.current in self._edited))
+        self._edited.add(self.current)
+
     def undo(self) -> None:
         history = self._history.get(self.current)
         if not history:
