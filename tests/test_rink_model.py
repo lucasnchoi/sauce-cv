@@ -97,3 +97,26 @@ def test_missing_weights_name_the_path(tmp_path):
 def test_pick_device_honours_an_explicit_name():
     assert pick_device("cpu").type == "cpu"
     assert pick_device().type in ("mps", "cpu")
+
+
+def test_detector_picks_the_best_detection_and_masks_rows_below_threshold(tmp_path):
+    save_weights(build_model(pretrained=False, **TINY), tmp_path / "best.pt", {})
+    detector = RinkKeypointDetector(tmp_path / "best.pt", threshold=0.3, device="cpu", **TINY)
+    keypoints = torch.zeros(2, 33, 3)
+    keypoints[0, :, :2] = 111.0                                   # the weaker detection: must never appear
+    keypoints[1, :, 0] = torch.arange(33, dtype=torch.float32) + 1.0
+    keypoints[1, :, 1] = 50.0
+    logits = torch.full((2, 33), 2.0)
+    logits[1, ::2] = -2.0                                         # even rows of the best detection fall below 0.3
+    fake = [{"boxes": torch.zeros(2, 4), "scores": torch.tensor([0.2, 0.9]),
+             "keypoints": keypoints, "keypoints_scores": logits}]
+    detector._model = lambda images: fake
+    points = detector.detect(np.zeros((32, 48, 3), dtype=np.uint8))
+    sigmoid = float(torch.sigmoid(torch.tensor(2.0)))
+    for i in range(33):
+        if i % 2 == 0:
+            assert points[i].tolist() == [0.0, 0.0, 0.0]
+        else:
+            assert points[i, 0] == pytest.approx(i + 1.0) and points[i, 1] == pytest.approx(50.0)
+            assert points[i, 2] == pytest.approx(sigmoid)
+    assert not (points[:, :2] == 111.0).any()
