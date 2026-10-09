@@ -437,3 +437,13 @@ def test_rink_check_refuses_missing_files(dataset, tmp_path, capsys):
                  "--frames-from", str(tmp_path / "nope.json")])
     captured = capsys.readouterr()
     assert code == 2 and "frame list not found" in captured.err + captured.out
+
+
+def test_run_records_the_footage_filter_mode(dataset, tmp_path):
+    clip = dataset / "mot-challenge-format" / "train" / "A_001"
+    code = main(["run", "--out", str(tmp_path / "run"), "--clip", str(clip), "--no-overlay", "--footage-filter", "transform"],
+                make_detector=fake_detector)
+    assert code == 0
+    recorded = json.loads((tmp_path / "run" / "run.json").read_text())["run"]
+    assert recorded["footage_filter"] == {"mode": "passthrough", "settings": None}     # no rink weights: nothing to filter on
+    assert recorded["detector_frames"] == "all"

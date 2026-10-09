@@ -23,9 +23,9 @@ from tracker.overlay import render_overlay
 from tracker.stages.assemble import assemble_tracking
 from tracker.stages.detect_track import DEFAULT_BYTETRACK, ByteTrackSettings, bytetrack_factory, run_detect, run_track
 from tracker.schemas import empty
-from tracker.stages.footage_filter import DEFAULT_FOOTAGE_FILTER, FootageFilterSettings, keypoint_frames, passthrough_frames
+from tracker.stages.footage_filter import DEFAULT_FOOTAGE_FILTER, FootageFilterSettings, frames_for, passthrough_frames, recorded_settings
 from tracker.stages.rink_keypoints import run_keypoints
-from tracker.stages.rink_transform import DEFAULT_RINK_TRANSFORM, RinkTransformSettings, fit_transforms
+from tracker.stages.rink_transform import DEFAULT_RINK_TRANSFORM, RinkTransformSettings, fit_all, smooth_transforms
 from tracker.tables import read_table, write_table
 from tracker.video import Clip, ClipInfo
 
@@ -69,7 +69,7 @@ class RinkStages:
 
     make_keypoint_detector: Callable[[], object] | None = None
     footage_filter: FootageFilterSettings = DEFAULT_FOOTAGE_FILTER
-    footage_mode: str = "keypoints"
+    footage_mode: str = "transform"
     rink_transform: RinkTransformSettings = DEFAULT_RINK_TRANSFORM
     _detector: object = field(default=None, repr=False)
 
@@ -89,7 +89,7 @@ class RinkStages:
             except Exception as error:          # noqa: BLE001 - recorded, and raised again by the stage
                 detector = None
                 unavailable = {"name": "unavailable", "weights": None, "threshold": None, "error": str(error)}
-        uses_rule = detector is not None and self.footage_mode == "keypoints"
+        mode = self.footage_mode if detector is not None else "passthrough"
         if detector is None and self.make_keypoint_detector is not None:
             rink_keypoints = unavailable
         elif detector is None:
@@ -98,8 +98,7 @@ class RinkStages:
             rink_keypoints = {"name": detector.name, "weights": str(detector.weights_path), "threshold": detector.threshold}
         return {
             "rink_keypoints": rink_keypoints,
-            "footage_filter": {"mode": "keypoints" if uses_rule else "passthrough",
-                               "settings": self.footage_filter.as_dict() if uses_rule else None},
+            "footage_filter": {"mode": mode, "settings": recorded_settings(mode, self.footage_filter)},
             "rink_transform": self.rink_transform.as_dict(),
         }
 
@@ -118,26 +117,31 @@ def run_clip(clip_path, run_dir, detector, tracker_factory=bytetrack_factory,
         out = Path(run_dir) / clip_id
         write_clip_info(clip.info, out / "clip.json")
     keypoints = None
+    fits = None
+    settings = rink.rink_transform if rink is not None else DEFAULT_RINK_TRANSFORM
+    mode = rink.footage_mode if rink is not None else "passthrough"
     if rink is not None and rink.make_keypoint_detector is not None:
         with _stage("rink keypoints", clip_id):
             keypoints = run_keypoints(clip, rink.keypoint_detector())
             write_table(keypoints, "keypoints", out / "keypoints.parquet")
+        with _stage("rink fit", clip_id):
+            fits = fit_all(keypoints, clip_id, clip.info.n_frames, settings)
+            write_table(fits, "rink_fits", out / "rink_fits.parquet")
     with _stage("footage filter", clip_id):
-        if keypoints is not None and rink.footage_mode == "keypoints":
-            frames = keypoint_frames(keypoints, clip.info, rink.footage_filter)
+        if fits is None:
+            frames = passthrough_frames(clip.info)          # no keypoint model: nothing to filter on
         else:
-            frames = passthrough_frames(clip.info)
+            frames = frames_for(mode, clip.info, rink.footage_filter, fits=fits, keypoints=keypoints)
         write_table(frames, "frames", out / "frames.parquet")
+    with _stage("rink transform", clip_id):
+        transforms = smooth_transforms(fits, frames, clip.info.fps, settings) if fits is not None else empty("rink_transforms")
+        write_table(transforms, "rink_transforms", out / "rink_transforms.parquet")
     with _stage("detect", clip_id):
-        detections = run_detect(clip, frames, detector)
+        detections = run_detect(clip, detector)
         write_table(detections, "detections", out / "detections.parquet")
     with _stage("track", clip_id):
         tracks = run_track(detections, frames, clip.info.fps, tracker_factory)
         write_table(tracks, "tracks", out / "tracks.parquet")
-    with _stage("rink transform", clip_id):
-        settings = rink.rink_transform if rink is not None else DEFAULT_RINK_TRANSFORM
-        transforms = fit_transforms(keypoints, frames, clip.info.fps, settings) if keypoints is not None else empty("rink_transforms")
-        write_table(transforms, "rink_transforms", out / "rink_transforms.parquet")
     with _stage("assemble", clip_id):
         tracking = assemble_tracking(tracks, frames, transforms)
         write_table(tracking, "tracking", out / "tracking.parquet")
@@ -225,6 +229,7 @@ def run_details(detector, tracker_settings: ByteTrackSettings = DEFAULT_BYTETRAC
         "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "detector": detector.name,
         "detector_threshold": getattr(detector, "threshold", None),
+        "detector_frames": "all",
         "tracker": {
             "name": "bytetrack",
             "library": "trackers",

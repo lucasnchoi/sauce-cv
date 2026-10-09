@@ -19,7 +19,7 @@ from tracker.labels.tool import render_current, run_tool
 from tracker.evaluate.scorecard import build_scorecard, read_fps_by_clip, write_scorecard
 from tracker.pipeline import RinkStages, read_clip_info, retrack_run, run_details, run_many, score_rink_run, score_run
 from tracker.stages.detect_track import ByteTrackSettings
-from tracker.stages.footage_filter import FootageFilterSettings
+from tracker.stages.footage_filter import MODES, FootageFilterSettings
 from tracker.stages.rink_transform import RinkTransformSettings
 from tracker.tables import read_table, write_table
 from tracker.video import Clip, ClipError
@@ -50,7 +50,7 @@ def _parser() -> argparse.ArgumentParser:
                      help="a setting: ByteTrack KEY=VALUE, or footage.KEY=VALUE / rink.KEY=VALUE for the footage filter and rink transform (repeatable)")
     run.add_argument("--rink-weights", type=Path, help="rink keypoint weights; enables stages 1-3")
     run.add_argument("--rink-threshold", type=float, default=0.3)
-    run.add_argument("--footage-filter", choices=["keypoints", "passthrough"], default="keypoints")
+    run.add_argument("--footage-filter", choices=list(MODES), default="transform")
     run.add_argument("--device", choices=["mps", "cpu"])
 
     retrack = commands.add_parser("retrack", help="re-link a finished run's detections with other tracker settings")
@@ -203,7 +203,7 @@ def _run(args, make_detector) -> int:
         footage_filter=footage, footage_mode=args.footage_filter, rink_transform=rink_settings,
     )
     if args.rink_weights is None:
-        print("no --rink-weights: footage filter is passthrough and every position is missing")
+        print("no --rink-weights: footage filter is passthrough, no rink transform, every position is missing")
     details = run_details(detector, settings, rink)
     # Written first so a run killed part-way still leaves the run details behind.
     args.out.mkdir(parents=True, exist_ok=True)

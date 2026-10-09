@@ -242,14 +242,25 @@ from tracker.pipeline import RinkStages
 
 RINK_POINTS = {k: (float(5 + 3 * k), float(10 + (k % 5) * 6), 0.9) for k in (0, 2, 4, 6, 8, 10, 11, 13, 15, 17, 19, 23)}
 
+import numpy as np
+
+from tracker.rink import template_points
+from tracker.stages.rink_transform import project
+
+H_CAMERA = np.array([[6.0, 0.5, 640.0], [0.0, -4.0, 400.0], [0.0, 0.0005, 1.0]])
+GOOD_IDS = (0, 2, 4, 6, 8, 10, 11, 13, 15, 17, 19, 23, 27, 29, 31)
+GOOD_POINTS = {k: (float(x), float(y), 0.9) for k, (x, y) in zip(GOOD_IDS, project(H_CAMERA, template_points()[list(GOOD_IDS)]))}
+
 
 def test_run_clip_with_rink_stages_writes_keypoints_frames_transforms_and_positions(make_sequence, tmp_path):
     seq = make_sequence(name="GAME_A_001", n_frames=3)
     detector = FakeKeypointDetector(RINK_POINTS)
-    rink = RinkStages(make_keypoint_detector=lambda: detector, footage_filter=FootageFilterSettings(min_segment_s=0.0, bridge_gap_s=0.0))
+    rink = RinkStages(make_keypoint_detector=lambda: detector, footage_filter=FootageFilterSettings(min_segment_s=0.0, bridge_gap_s=0.0), footage_mode="keypoints")
     run_clip(seq, tmp_path / "run", FakeDetector([BOX]), FakeTrackerFactory(), overlay=True, rink=rink)
     out = tmp_path / "run" / "GAME_A_001"
     assert read_table("keypoints", out / "keypoints.parquet").height == 3 * len(RINK_POINTS)
+    fits = read_table("rink_fits", out / "rink_fits.parquet")
+    assert fits["frame"].to_list() == [0, 1, 2] and set(fits["status"].to_list()) <= {"fitted", "invalid"}
     frames = read_table("frames", out / "frames.parquet")
     assert frames["is_play"].all()
     transforms = read_table("rink_transforms", out / "rink_transforms.parquet")
@@ -268,7 +279,9 @@ def test_a_clip_with_no_play_frames_still_succeeds_with_everything_missing(make_
     frames = read_table("frames", out / "frames.parquet")
     assert not frames["is_play"].any()
     assert read_table("rink_transforms", out / "rink_transforms.parquet").height == 0
-    assert read_table("detections", out / "detections.parquet").height == 0
+    assert read_table("detections", out / "detections.parquet").height == 3     # the detector still ran on every frame
+    assert read_table("tracks", out / "tracks.parquet").height == 0
+    assert read_table("rink_fits", out / "rink_fits.parquet")["status"].to_list() == ["invalid"] * 3
     assert read_table("tracking", out / "tracking.parquet").height == 0
 
 
@@ -293,20 +306,38 @@ def test_missing_weights_fail_the_keypoint_stage_on_every_clip_with_the_path(mak
 
 
 def test_run_details_record_the_rink_settings(tmp_path):
-    rink = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector({}), footage_filter=FootageFilterSettings(min_keypoints=7))
+    rink = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector({}), footage_filter=FootageFilterSettings(min_keypoints=7), footage_mode="keypoints")
     details = run_details(FakeDetector([BOX]), rink=rink)
     assert details["footage_filter"] == {"mode": "keypoints", "settings": {"min_keypoints": 7, "min_conf": 0.5, "bridge_gap_s": 0.5, "min_segment_s": 1.0}}
     assert details["rink_transform"]["max_reproj_px"] == 10.0 and details["rink_keypoints"]["name"] == "fake-keypoints"
     assert run_details(FakeDetector([BOX]))["footage_filter"] == {"mode": "passthrough", "settings": None}
     assert run_details(FakeDetector([BOX]))["rink_keypoints"] is None
+    default = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector({}))
+    assert run_details(FakeDetector([BOX]), rink=default)["footage_filter"] == {"mode": "transform", "settings": {"bridge_gap_s": 0.5, "min_segment_s": 1.0}}
+    assert run_details(FakeDetector([BOX]))["detector_frames"] == "all"
 
 
 def test_retrack_keeps_rink_transforms_and_positions(make_sequence, tmp_path):
     seq = make_sequence(name="GAME_A_001", n_frames=3)
-    rink = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector(RINK_POINTS), footage_filter=FootageFilterSettings(min_segment_s=0.0))
+    rink = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector(GOOD_POINTS), footage_filter=FootageFilterSettings(min_segment_s=0.0))
     run_clip(seq, tmp_path / "src", FakeDetector([BOX]), overlay=False, rink=rink)
     retrack_run(tmp_path / "src", tmp_path / "out", ByteTrackSettings())
     assert read_table("rink_transforms", tmp_path / "out" / "GAME_A_001" / "rink_transforms.parquet").height == 3
     before = read_table("tracking", tmp_path / "src" / "GAME_A_001" / "tracking.parquet")["position_status"].to_list()
     after = read_table("tracking", tmp_path / "out" / "GAME_A_001" / "tracking.parquet")["position_status"].to_list()
     assert before == after
+
+
+def test_transform_mode_calls_a_frame_play_only_when_its_fit_is_valid(make_sequence, tmp_path):
+    seq = make_sequence(name="GAME_A_001", n_frames=3)
+    detector = FakeKeypointDetector(GOOD_POINTS, per_frame={2: {10: (5.0, 5.0, 0.9)}})     # frame 2: one point, no fit
+    rink = RinkStages(make_keypoint_detector=lambda: detector, footage_filter=FootageFilterSettings(min_segment_s=0.0, bridge_gap_s=0.0))
+    run_clip(seq, tmp_path / "run", FakeDetector([BOX]), FakeTrackerFactory(), overlay=False, rink=rink)
+    out = tmp_path / "run" / "GAME_A_001"
+    assert read_table("rink_fits", out / "rink_fits.parquet")["status"].to_list() == ["fitted", "fitted", "invalid"]
+    frames = read_table("frames", out / "frames.parquet")
+    assert frames["is_play"].to_list() == [True, True, False]
+    assert read_table("rink_transforms", out / "rink_transforms.parquet")["frame"].to_list() == [0, 1]
+    assert read_table("detections", out / "detections.parquet")["frame"].to_list() == [0, 1, 2]
+    assert read_table("tracks", out / "tracks.parquet")["frame"].to_list() == [0, 1]
+    assert read_table("tracking", out / "tracking.parquet")["position_status"].to_list() == ["observed", "observed"]
