@@ -1,9 +1,10 @@
 """Stage 2: footage filter.
 
-The spec's rule, all four numbers settings: a frame is main-camera play when
-enough rink keypoints are confident; runs of play frames form segments; short
-gaps are bridged; short segments are dropped. The Plan 1 pass-through stays
-for comparison (`--footage-filter passthrough`).
+Three modes. `transform` (default, Plan 2c): a frame is main-camera play when
+its own rink transform fitted (stage 3a). `keypoints` (Plan 2's rule): play
+when enough rink keypoints are confident. `passthrough` (Plan 1): every frame
+is play. In the first two, runs of play frames form segments, short gaps are
+bridged and short segments are dropped.
 """
 from __future__ import annotations
 
@@ -36,6 +37,16 @@ class FootageFilterSettings:
 
 
 DEFAULT_FOOTAGE_FILTER = FootageFilterSettings()
+MODES = ("transform", "keypoints", "passthrough")
+
+
+def recorded_settings(mode: str, settings: FootageFilterSettings) -> dict | None:
+    """What run.json records for the filter: only the numbers the mode uses."""
+    if mode == "keypoints":
+        return settings.as_dict()
+    if mode == "transform":
+        return {"bridge_gap_s": settings.bridge_gap_s, "min_segment_s": settings.min_segment_s}
+    return None
 
 
 def passthrough_frames(info: ClipInfo) -> pl.DataFrame:
@@ -64,12 +75,9 @@ def _runs(flags: list[bool], value: bool) -> list[tuple[int, int]]:
     return runs
 
 
-def keypoint_frames(keypoints: pl.DataFrame, info: ClipInfo, settings: FootageFilterSettings = DEFAULT_FOOTAGE_FILTER) -> pl.DataFrame:
-    keypoints = validate(keypoints, "keypoints")
-    counts = (keypoints.filter(pl.col("conf") >= settings.min_conf)
-              .group_by("frame").agg(pl.len().alias("n")))
-    confident = {int(f): int(n) for f, n in counts.iter_rows()}
-    play = [confident.get(frame, 0) >= settings.min_keypoints for frame in range(info.n_frames)]
+def _frames_from_flags(play: list[bool], info: ClipInfo, settings: FootageFilterSettings) -> pl.DataFrame:
+    """Bridge short gaps inside play, drop short segments, number the segments, build the frames table."""
+    play = list(play)
     bridge = round(settings.bridge_gap_s * info.fps)
     for start, stop in _runs(play, False):
         inside = start > 0 and stop < info.n_frames        # a gap, not a leading or trailing stretch
@@ -85,3 +93,35 @@ def keypoint_frames(keypoints: pl.DataFrame, info: ClipInfo, settings: FootageFi
     rows = [{"clip_id": info.clip_id, "frame": frame, "time_s": frame / info.fps, "is_play": play[frame], "segment_id": segment[frame]}
             for frame in range(info.n_frames)]
     return validate(from_rows("frames", rows), "frames")
+
+
+def keypoint_frames(keypoints: pl.DataFrame, info: ClipInfo, settings: FootageFilterSettings = DEFAULT_FOOTAGE_FILTER) -> pl.DataFrame:
+    keypoints = validate(keypoints, "keypoints")
+    counts = (keypoints.filter(pl.col("conf") >= settings.min_conf)
+              .group_by("frame").agg(pl.len().alias("n")))
+    confident = {int(f): int(n) for f, n in counts.iter_rows()}
+    play = [confident.get(frame, 0) >= settings.min_keypoints for frame in range(info.n_frames)]
+    return _frames_from_flags(play, info, settings)
+
+
+def transform_frames(fits: pl.DataFrame, info: ClipInfo, settings: FootageFilterSettings = DEFAULT_FOOTAGE_FILTER) -> pl.DataFrame:
+    """Play when the frame's own fit is `fitted`: the stage-3 validity gate is the filter's test."""
+    fits = validate(fits, "rink_fits")
+    fitted = {int(f) for f in fits.filter(pl.col("status") == "fitted")["frame"].to_list()}
+    play = [frame in fitted for frame in range(info.n_frames)]
+    return _frames_from_flags(play, info, settings)
+
+
+def frames_for(mode: str, info: ClipInfo, settings: FootageFilterSettings,
+               fits: pl.DataFrame | None = None, keypoints: pl.DataFrame | None = None) -> pl.DataFrame:
+    if mode not in MODES:
+        raise ValueError(f"unknown footage filter mode '{mode}'; use one of {MODES}")
+    if mode == "passthrough":
+        return passthrough_frames(info)
+    if mode == "keypoints":
+        if keypoints is None:
+            raise ValueError("footage filter mode 'keypoints' needs the keypoints table")
+        return keypoint_frames(keypoints, info, settings)
+    if fits is None:
+        raise ValueError("footage filter mode 'transform' needs the rink_fits table")
+    return transform_frames(fits, info, settings)
