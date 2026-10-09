@@ -3,7 +3,7 @@ import pytest
 
 from fakes import FakeClip, FakeDetector, FakeTrackerFactory, detections
 from tracker.schemas import SCHEMAS, from_rows
-from tracker.stages.detect_track import bytetrack_factory, run_detect_track
+from tracker.stages.detect_track import bytetrack_factory, run_detect, run_detect_track, run_track
 from tracker.stages.footage_filter import passthrough_frames
 from tracker.video import ClipInfo
 
@@ -47,25 +47,23 @@ def test_every_play_frame_gets_a_row_per_tracked_box():
     }
 
 
-def test_frames_that_are_not_play_are_skipped_and_not_sent_to_the_detector():
+def test_non_play_frames_are_detected_but_not_tracked():
     clip = FakeClip(n_frames=4)
     frames = frames_table("c", [(0, True, 0), (1, False, None), (2, False, None), (3, True, 1)])
     detector = FakeDetector([BOX_A])
     tracks = run_detect_track(clip, frames, detector, FakeTrackerFactory())
-    assert detector.calls == 2
-    assert tracks["frame"].to_list() == [0, 3]
+    assert detector.calls == 4                       # the cache covers every frame (refilter needs it)
+    assert tracks["frame"].to_list() == [0, 3]       # tracks exist on play frames only
 
 
-def test_a_new_segment_gets_a_fresh_tracker_and_new_track_ids():
+def test_one_tracker_serves_the_whole_clip_across_segments():
     clip = FakeClip(n_frames=4)
     frames = frames_table("c", [(0, True, 0), (1, True, 0), (2, True, 1), (3, True, 1)])
     factory = FakeTrackerFactory()
     tracks = run_detect_track(clip, frames, FakeDetector([BOX_A, BOX_B]), factory)
-    assert len(factory.fps_seen) == 2
-    first = set(tracks.filter(frame=0)["track_id"])
-    second = set(tracks.filter(frame=2)["track_id"])
-    assert first == {0, 1}
-    assert first.isdisjoint(second)          # tracks never cross a segment boundary
+    assert len(factory.fps_seen) == 1                # created once, not once per segment
+    assert set(tracks.filter(frame=0)["track_id"]) == {0, 1}
+    assert set(tracks.filter(frame=2)["track_id"]) == {0, 1}     # the tracker's own ids, no per-segment offset
 
 
 def test_the_tracker_is_given_the_clip_frame_rate():
@@ -121,25 +119,19 @@ def test_real_bytetrack_keeps_one_id_for_a_smoothly_moving_box():
     assert tracks.height >= 8                 # the first frame is not yet confirmed
 
 
-from tracker.stages.detect_track import run_detect, run_track
-
-
-def test_run_detect_writes_one_row_per_box_on_play_frames_only():
+def test_run_detect_writes_one_row_per_box_on_every_frame():
     clip = FakeClip(clip_id="c", n_frames=3)
-    frames = frames_table("c", [(0, True, 0), (1, False, None), (2, True, 0)])
-    detector = FakeDetector([BOX_A, BOX_B])
-    dets = run_detect(clip, frames, detector)
+    dets = run_detect(clip, FakeDetector([BOX_A, BOX_B]))
     assert dets.columns == list(SCHEMAS["detections"])
-    assert detector.calls == 2
-    assert dets["frame"].to_list() == [0, 0, 2, 2]
-    assert dets.row(0, named=True) == {
-        "clip_id": "c", "frame": 0, "x1": 10.0, "y1": 10.0, "x2": 30.0, "y2": 40.0, "conf": 0.9,
+    assert dets["frame"].to_list() == [0, 0, 1, 1, 2, 2]
+    assert dets.filter(frame=1).sort("x1").to_dicts()[0] == {
+        "clip_id": "c", "frame": 1, "x1": 10.0, "y1": 10.0, "x2": 30.0, "y2": 40.0, "conf": 0.9,
     }
 
 
 def test_run_detect_with_nothing_found_is_an_empty_valid_table():
     clip = FakeClip(n_frames=2)
-    dets = run_detect(clip, passthrough_frames(clip.info), FakeDetector([]))
+    dets = run_detect(clip, FakeDetector([]))
     assert dets.height == 0 and dets.columns == list(SCHEMAS["detections"])
 
 
@@ -147,7 +139,7 @@ def test_run_track_reproduces_run_detect_track():
     clip = FakeClip(clip_id="c", n_frames=4)
     frames = frames_table("c", [(0, True, 0), (1, True, 0), (2, True, 1), (3, True, 1)])
     direct = run_detect_track(clip, frames, FakeDetector([BOX_A, BOX_B]), FakeTrackerFactory())
-    dets = run_detect(clip, frames, FakeDetector([BOX_A, BOX_B]))
+    dets = run_detect(clip, FakeDetector([BOX_A, BOX_B]))
     again = run_track(dets, frames, clip.info.fps, FakeTrackerFactory())
     assert again.to_dicts() == direct.to_dicts()
 
@@ -202,3 +194,44 @@ def test_real_bytetrack_survives_an_empty_frame_and_keeps_the_id():
     assert tracks["track_id"].n_unique() == 1
     assert 4 not in tracks["frame"].to_list()
     assert tracks.height >= 7
+
+
+def test_run_track_skips_non_play_frames_entirely():
+    """Non-play frames are not fed as empty frames: the tracker never sees them."""
+    class CountingFactory:
+        def __init__(self):
+            self.updates = []
+            self.made = 0
+
+        def __call__(self, fps):
+            self.made += 1
+            factory = self
+
+            class _Tracker:
+                def update(self, dets):
+                    factory.updates.append(len(dets))
+                    dets.tracker_id = np.arange(len(dets))
+                    return dets
+            return _Tracker()
+
+    frames = frames_table("c", [(0, True, 0), (1, False, None), (2, False, None), (3, True, 1), (4, True, 1)])
+    dets = from_rows("detections", [
+        {"clip_id": "c", "frame": f, "x1": 1.0, "y1": 1.0, "x2": 5.0, "y2": 5.0, "conf": 0.9} for f in (0, 1, 2, 3)
+    ])
+    factory = CountingFactory()
+    tracks = run_track(dets, frames, 30.0, factory)
+    assert factory.made == 1
+    assert factory.updates == [1, 1, 0]              # frames 0, 3, 4; the boxes on 1 and 2 are never shown
+    assert tracks["frame"].to_list() == [0, 3]
+
+
+@pytest.mark.slow
+def test_real_bytetrack_keeps_the_id_across_a_skipped_gap():
+    """Review Focus 3: a box that is where it was before a gap keeps its id."""
+    box = {"clip_id": "c", "x1": 100.0, "y1": 100.0, "x2": 140.0, "y2": 180.0, "conf": 0.95}
+    rows = [{**box, "frame": f, "x1": 100.0 + f, "x2": 140.0 + f} for f in list(range(0, 6)) + list(range(10, 16))]
+    frames = frames_table("c", [(f, f < 6 or f >= 10, 0 if f < 6 else (1 if f >= 10 else None)) for f in range(16)], fps=30.0)
+    tracks = run_track(from_rows("detections", rows), frames, 30.0, bytetrack_factory)
+    assert tracks["frame"].to_list()[0] >= 1                 # confirmation needs a second frame
+    assert tracks["track_id"].n_unique() == 1
+    assert {0, 1, 2, 3, 4, 5} - set(tracks["frame"]) <= {0} and set(range(10, 16)) <= set(tracks["frame"])

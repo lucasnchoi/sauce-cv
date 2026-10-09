@@ -1,4 +1,4 @@
-"""Stage 4: find people in each play frame and link them into tracks within a segment."""
+"""Stage 4: find people in every frame and link the play frames into tracks with one tracker per clip."""
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
@@ -138,14 +138,11 @@ def _detections_from(part: pl.DataFrame | None) -> sv.Detections:
     )
 
 
-def run_detect(clip, frames: pl.DataFrame, detector: Detector) -> pl.DataFrame:
-    """Run the detector on every play frame; one row per box found."""
+def run_detect(clip, detector: Detector) -> pl.DataFrame:
+    """Run the detector on every frame; one row per box found. Every frame, so a run's cache can be re-filtered."""
     clip_id = clip.info.clip_id
-    segment_of = _play_segments(frames, clip_id)
     rows: list[dict] = []
     for index, image in clip.frames():
-        if index not in segment_of:
-            continue
         rows.extend(_rows_from(detector.detect(image), clip_id, index))
     return validate(from_rows("detections", rows), "detections")
 
@@ -156,10 +153,13 @@ def run_track(
     fps: float,
     tracker_factory: TrackerFactory = bytetrack_factory,
 ) -> pl.DataFrame:
-    """Link cached detections into tracks, one tracker per segment.
+    """Link cached detections into tracks with one tracker for the clip.
 
-    Every play frame is fed to the tracker, including frames with no
-    detections, so lost-track bookkeeping advances exactly as it did live.
+    The tracker is fed the play frames in frame order, including play frames
+    with no detections, so lost-track bookkeeping advances as it did live.
+    Non-play frames are skipped entirely: a player whose box is where it was
+    before a gap keeps their id, and the tracker's own lost buffer retires the
+    rest. Track ids are the tracker's ids.
     """
     detections = validate(detections, "detections")
     frames = validate(frames, "frames")
@@ -170,22 +170,14 @@ def run_track(
     other = sorted(set(detections["clip_id"].unique().to_list()) - {clip_id})
     if other:
         raise ValueError(f"detections table is for clip(s) {other}, not '{clip_id}'")
-    segment_of = _play_segments(frames, clip_id)
+    play_frames = sorted(_play_segments(frames, clip_id))
     by_frame = {
         (key[0] if isinstance(key, tuple) else key): part
         for key, part in detections.partition_by("frame", as_dict=True).items()
     }
-
     rows: list[dict] = []
-    tracker = None
-    current_segment = None
-    id_offset = 0
-    next_free_id = 0
-    for index, segment in segment_of.items():
-        if tracker is None or segment != current_segment:
-            tracker = tracker_factory(fps)
-            current_segment = segment
-            id_offset = next_free_id
+    tracker = tracker_factory(fps)
+    for index in play_frames:
         tracked = tracker.update(_detections_from(by_frame.get(index)))
         if tracked.tracker_id is None or len(tracked) == 0:
             continue
@@ -195,12 +187,10 @@ def run_track(
         for box, track_id, conf in zip(tracked.xyxy, tracked.tracker_id, confidences):
             if track_id < 0:                  # not yet confirmed by the tracker
                 continue
-            global_id = id_offset + int(track_id)
-            next_free_id = max(next_free_id, global_id + 1)
             rows.append({
                 "clip_id": clip_id,
                 "frame": index,
-                "track_id": global_id,
+                "track_id": int(track_id),
                 "class": "player",
                 "x1": float(box[0]),
                 "y1": float(box[1]),
@@ -217,6 +207,5 @@ def run_detect_track(
     detector: Detector,
     tracker_factory: TrackerFactory = bytetrack_factory,
 ) -> pl.DataFrame:
-    """Detect then track, as one step. Equivalent to run_track(run_detect(...))."""
-    detections = run_detect(clip, frames, detector)
-    return run_track(detections, frames, clip.info.fps, tracker_factory)
+    """Detect on every frame, then track the play frames."""
+    return run_track(run_detect(clip, detector), frames, clip.info.fps, tracker_factory)
