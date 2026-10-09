@@ -220,12 +220,11 @@ def retrack_run(src_run, out_run, settings: ByteTrackSettings) -> dict[str, str 
 
 def refilter_run(src_run, out_run, mode: str, footage: FootageFilterSettings, rink_settings: RinkTransformSettings,
                  tracker_settings: ByteTrackSettings, tracker_factory=None) -> dict[str, str | None]:
-    """Re-run the footage filter, the transform smoothing, tracking and positions from a finished run's cache.
+    """Re-run the rink fit, the footage filter, the transform smoothing, tracking and positions from a finished run's cached keypoints and detections.
 
-    Reads keypoints, raw rink fits and detections; no model is loaded and no
-    overlay is written. The source must have been detected on every frame
-    (run.json: detector_frames "all"), or the re-filtered play frames could
-    lack detections.
+    No model is loaded and no overlay is written. The source must have been
+    detected on every frame (run.json: detector_frames "all"). Every setting
+    recorded in the new run.json was applied.
     """
     src_run, out_run = Path(src_run), Path(out_run)
     if src_run.resolve() == out_run.resolve():
@@ -233,8 +232,10 @@ def refilter_run(src_run, out_run, mode: str, footage: FootageFilterSettings, ri
     if mode not in MODES:
         raise ValueError(f"unknown footage filter mode '{mode}'; use one of {MODES}")
     source_file = src_run / "run.json"
+    if not source_file.is_file():
+        raise ValueError(f"{src_run} has no run.json; refilter needs the run details of the source")
     try:
-        details = json.loads(source_file.read_text())["run"] if source_file.is_file() else {}
+        details = json.loads(source_file.read_text())["run"]
     except (json.JSONDecodeError, KeyError, TypeError) as error:
         raise ValueError(f"cannot read {source_file}: {error}") from error
     if details.get("detector_frames") != "all":
@@ -249,15 +250,18 @@ def refilter_run(src_run, out_run, mode: str, footage: FootageFilterSettings, ri
             with _stage("read cached run", clip_id):
                 info = read_clip_info(clip_dir / "clip.json")
                 detections = read_table("detections", clip_dir / "detections.parquet")
-                fits_file, keypoints_file = clip_dir / "rink_fits.parquet", clip_dir / "keypoints.parquet"
-                fits = read_table("rink_fits", fits_file) if fits_file.is_file() else None
+                keypoints_file = clip_dir / "keypoints.parquet"
                 keypoints = read_table("keypoints", keypoints_file) if keypoints_file.is_file() else None
-                if fits is None and mode != "passthrough":
-                    raise FileNotFoundError(f"{fits_file} is missing: no raw rink fits to refilter from")
+                if keypoints is None and mode != "passthrough":
+                    raise FileNotFoundError(f"{keypoints_file} is missing: no keypoints to refilter from")
                 write_clip_info(info, out / "clip.json")
-                for name in ("keypoints.parquet", "rink_fits.parquet", "detections.parquet"):
+                for name in ("keypoints.parquet", "detections.parquet"):
                     if (clip_dir / name).is_file():
                         shutil.copyfile(clip_dir / name, out / name)
+            with _stage("rink fit", clip_id):
+                fits = fit_all(keypoints, clip_id, info.n_frames, rink_settings) if keypoints is not None else None
+                if fits is not None:
+                    write_table(fits, "rink_fits", out / "rink_fits.parquet")
             with _stage("footage filter", clip_id):
                 frames = passthrough_frames(info) if fits is None else frames_for(mode, info, footage, fits=fits, keypoints=keypoints)
                 write_table(frames, "frames", out / "frames.parquet")

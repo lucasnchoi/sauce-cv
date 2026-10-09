@@ -308,12 +308,12 @@ def test_missing_weights_fail_the_keypoint_stage_on_every_clip_with_the_path(mak
 def test_run_details_record_the_rink_settings(tmp_path):
     rink = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector({}), footage_filter=FootageFilterSettings(min_keypoints=7), footage_mode="keypoints")
     details = run_details(FakeDetector([BOX]), rink=rink)
-    assert details["footage_filter"] == {"mode": "keypoints", "settings": {"min_keypoints": 7, "min_conf": 0.5, "bridge_gap_s": 0.5, "min_segment_s": 1.0}}
+    assert details["footage_filter"] == {"mode": "keypoints", "settings": {"min_keypoints": 7, "min_conf": 0.5, "bridge_gap_s": 2.0, "min_segment_s": 1.0}}
     assert details["rink_transform"]["max_reproj_px"] == 10.0 and details["rink_keypoints"]["name"] == "fake-keypoints"
     assert run_details(FakeDetector([BOX]))["footage_filter"] == {"mode": "passthrough", "settings": None}
     assert run_details(FakeDetector([BOX]))["rink_keypoints"] is None
     default = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector({}))
-    assert run_details(FakeDetector([BOX]), rink=default)["footage_filter"] == {"mode": "transform", "settings": {"bridge_gap_s": 0.5, "min_segment_s": 1.0}}
+    assert run_details(FakeDetector([BOX]), rink=default)["footage_filter"] == {"mode": "transform", "settings": {"bridge_gap_s": 2.0, "min_segment_s": 1.0}}
     assert run_details(FakeDetector([BOX]))["detector_frames"] == "all"
 
 
@@ -394,13 +394,32 @@ def test_refilter_refuses_a_run_detected_on_play_frames_only(make_sequence, tmp_
     assert not (tmp_path / "out").exists()
 
 
-def test_refilter_names_a_clip_without_rink_fits_and_refuses_its_own_source(make_sequence, tmp_path):
+def test_refilter_names_a_clip_without_keypoints_and_refuses_its_own_source(make_sequence, tmp_path):
     src = _source_run(make_sequence, tmp_path)
-    (src / "GAME_A_001" / "rink_fits.parquet").unlink()
+    (src / "GAME_A_001" / "keypoints.parquet").unlink()
     results = refilter_run(src, tmp_path / "out", "transform", FootageFilterSettings(), RinkTransformSettings(), ByteTrackSettings(),
                            tracker_factory=FakeTrackerFactory())
-    assert "rink_fits.parquet" in results["GAME_A_001"] and "read cached run" in results["GAME_A_001"]
+    assert "keypoints.parquet" in results["GAME_A_001"] and "read cached run" in results["GAME_A_001"]
     with pytest.raises(ValueError, match="same folder"):
         refilter_run(src, src, "transform", FootageFilterSettings(), RinkTransformSettings(), ByteTrackSettings())
     with pytest.raises(ValueError, match="mode"):
         refilter_run(src, tmp_path / "out2", "magic", FootageFilterSettings(), RinkTransformSettings(), ByteTrackSettings())
+
+
+def test_refilter_applies_rink_fit_settings_and_records_them(make_sequence, tmp_path):
+    src = _source_run(make_sequence, tmp_path)
+    strict = RinkTransformSettings(max_reproj_px=0.0)          # nothing can pass a zero error limit
+    results = refilter_run(src, tmp_path / "out", "transform", FootageFilterSettings(), strict, ByteTrackSettings(),
+                           tracker_factory=FakeTrackerFactory())
+    assert results == {"GAME_A_001": None}
+    out = tmp_path / "out" / "GAME_A_001"
+    assert read_table("rink_fits", out / "rink_fits.parquet")["status"].to_list() == ["invalid"] * 4
+    assert not read_table("frames", out / "frames.parquet")["is_play"].any()
+    assert json.loads((tmp_path / "out" / "run.json").read_text())["run"]["rink_transform"]["max_reproj_px"] == 0.0
+
+
+def test_refilter_refuses_a_source_without_run_json(make_sequence, tmp_path):
+    src = _source_run(make_sequence, tmp_path)
+    (src / "run.json").unlink()
+    with pytest.raises(ValueError, match="no run.json"):
+        refilter_run(src, tmp_path / "out", "transform", FootageFilterSettings(), RinkTransformSettings(), ByteTrackSettings())

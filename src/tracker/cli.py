@@ -59,7 +59,7 @@ def _parser() -> argparse.ArgumentParser:
     retrack.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
 
     refilter = commands.add_parser("refilter", help="re-run the footage filter, rink transform, tracking and positions from a finished run's cache")
-    refilter.add_argument("--run", type=Path, required=True, help="a run detected on every frame (Plan 2c or later)")
+    refilter.add_argument("--run", type=Path, required=True, help="a run detected on every frame (Plan 2c or later); its keypoints and detections are re-used, everything else is re-run under the settings given")
     refilter.add_argument("--out", type=Path, required=True)
     refilter.add_argument("--footage-filter", choices=list(MODES), default="transform")
     refilter.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",

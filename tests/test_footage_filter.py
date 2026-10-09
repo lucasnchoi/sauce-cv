@@ -24,8 +24,8 @@ def keypoints(play_frames, n_points=6, conf=0.9):
     ])
 
 
-def test_defaults_match_the_spec():
-    assert DEFAULT_FOOTAGE_FILTER == FootageFilterSettings(min_keypoints=6, min_conf=0.5, bridge_gap_s=0.5, min_segment_s=1.0)
+def test_defaults_are_the_plan_2c_choice():
+    assert DEFAULT_FOOTAGE_FILTER == FootageFilterSettings(min_keypoints=6, min_conf=0.5, bridge_gap_s=2.0, min_segment_s=1.0)
     assert FootageFilterSettings.from_dict({"min_keypoints": "8"}).min_keypoints == 8
 
 
@@ -41,14 +41,14 @@ def test_a_frame_needs_enough_confident_keypoints():
 
 def test_short_gaps_are_bridged_and_long_gaps_split_segments():
     # play 0-14, gap 15-18 (4 frames < 5 = 0.5 s at 10 fps): bridged; play 19-24; gap 25-29 (5 frames): not bridged; play 30-39
-    table = keypoint_frames(keypoints(list(range(0, 15)) + list(range(19, 25)) + list(range(30, 40))), INFO)
+    table = keypoint_frames(keypoints(list(range(0, 15)) + list(range(19, 25)) + list(range(30, 40))), INFO, FootageFilterSettings(bridge_gap_s=0.5))
     assert table["is_play"].to_list() == [True] * 25 + [False] * 5 + [True] * 10
     assert table["segment_id"].to_list() == [0] * 25 + [None] * 5 + [1] * 10
 
 
 def test_segments_shorter_than_a_second_are_dropped():
     # play 0-8 (9 frames < 10): dropped; play 20-39 (20 frames): kept as segment 0
-    table = keypoint_frames(keypoints(list(range(0, 9)) + list(range(20, 40))), INFO)
+    table = keypoint_frames(keypoints(list(range(0, 9)) + list(range(20, 40))), INFO, FootageFilterSettings(bridge_gap_s=0.5))
     assert table["is_play"].to_list() == [False] * 20 + [True] * 20
     assert table["segment_id"].to_list() == [None] * 20 + [0] * 20
 
@@ -88,10 +88,10 @@ def test_transform_mode_calls_a_frame_play_when_its_fit_is_valid():
 
 def test_transform_mode_drops_short_segments_and_bridges_short_gaps():
     """Review Focus 1: one good frame among bad ones is not a segment; a short gap inside play is."""
-    lone = transform_frames(fits({5} | set(range(20, 40))), INFO)
+    lone = transform_frames(fits({5} | set(range(20, 40))), INFO, FootageFilterSettings(bridge_gap_s=0.5))
     assert lone["is_play"].to_list() == [False] * 20 + [True] * 20
     # play 0-14, gap 15-18 (4 frames < 5): bridged; gap 25-29 (5 frames): split
-    bridged = transform_frames(fits(set(range(0, 15)) | set(range(19, 25)) | set(range(30, 40))), INFO)
+    bridged = transform_frames(fits(set(range(0, 15)) | set(range(19, 25)) | set(range(30, 40))), INFO, FootageFilterSettings(bridge_gap_s=0.5))
     assert bridged["is_play"].to_list() == [True] * 25 + [False] * 5 + [True] * 10
     assert bridged["segment_id"].to_list() == [0] * 25 + [None] * 5 + [1] * 10
 

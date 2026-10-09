@@ -4,7 +4,8 @@ Three modes. `transform` (default, Plan 2c): a frame is main-camera play when
 its own rink transform fitted (stage 3a). `keypoints` (Plan 2's rule): play
 when enough rink keypoints are confident. `passthrough` (Plan 1): every frame
 is play. In the first two, runs of play frames form segments, short gaps are
-bridged and short segments are dropped.
+bridged and short segments are dropped. The bridge default is 2.0 s, chosen on the
+training clips in Plan 2c (`docs/filter-results.md`); Plan 2's rule used 0.5 s.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ from tracker.video import ClipInfo
 class FootageFilterSettings:
     min_keypoints: int = 6
     min_conf: float = 0.5
-    bridge_gap_s: float = 0.5
+    bridge_gap_s: float = 2.0
     min_segment_s: float = 1.0
 
     def as_dict(self) -> dict:
