@@ -1,4 +1,4 @@
-"""Stage 3: one pixel-to-rink homography per play frame.
+"""Stage 3: one pixel-to-rink homography per frame (3a, every frame) and its smoothing within play segments (3b).
 
 Fit: RANSAC from the frame's keypoints to the template, in the feet -> pixel
 direction so the RANSAC and validity thresholds are in pixels; the stored H
@@ -90,25 +90,41 @@ def _row(clip_id: str, frame: int, H: np.ndarray | None, n_inliers: int, error: 
             "reproj_error_px": None if error is None else float(error), "status": status}
 
 
-def fit_transforms(keypoints: pl.DataFrame, frames: pl.DataFrame, fps: float,
-                   settings: RinkTransformSettings = DEFAULT_RINK_TRANSFORM) -> pl.DataFrame:
+def fit_all(keypoints: pl.DataFrame, clip_id: str, n_frames: int,
+            settings: RinkTransformSettings = DEFAULT_RINK_TRANSFORM) -> pl.DataFrame:
+    """Stage 3a: the raw fit of every frame of the clip, `fitted` or `invalid`. No smoothing, no interpolation."""
     keypoints = validate(keypoints, "keypoints")
+    points: dict[int, pl.DataFrame] = {}
+    if keypoints.height:
+        for key, part in keypoints.partition_by("frame", as_dict=True).items():
+            points[int(key[0] if isinstance(key, tuple) else key)] = part
+    rows = []
+    for frame in range(n_frames):
+        part = points.get(frame)
+        if part is None:
+            H, n_inliers, error = None, 0, None
+        else:
+            H, n_inliers, error = fit_frame(part.select("x_px", "y_px").to_numpy(), part["keypoint_id"].to_numpy(), settings)
+        rows.append(_row(clip_id, frame, H, n_inliers, error, "fitted" if H is not None else "invalid"))
+    return validate(from_rows("rink_fits", rows), "rink_fits")
+
+
+def smooth_transforms(fits: pl.DataFrame, frames: pl.DataFrame, fps: float,
+                      settings: RinkTransformSettings = DEFAULT_RINK_TRANSFORM) -> pl.DataFrame:
+    """Stage 3b: within each play segment, average fitted frames over a short window and interpolate short gaps."""
+    fits = validate(fits, "rink_fits")
     frames = validate(frames, "frames")
     play = frames.filter(pl.col("is_play")).sort("frame")
     if play.height == 0:
         return validate(from_rows("rink_transforms", []), "rink_transforms")
     clip_id = str(play["clip_id"][0])
-    points: dict[int, pl.DataFrame] = {}
-    if keypoints.height:
-        for key, part in keypoints.partition_by("frame", as_dict=True).items():
-            points[int(key[0] if isinstance(key, tuple) else key)] = part
     raw: dict[int, tuple[np.ndarray | None, int, float | None]] = {}
-    for frame in play["frame"].to_list():
-        part = points.get(int(frame))
-        if part is None:
-            raw[int(frame)] = (None, 0, None)
-            continue
-        raw[int(frame)] = fit_frame(part.select("x_px", "y_px").to_numpy(), part["keypoint_id"].to_numpy(), settings)
+    for row in fits.iter_rows(named=True):
+        H = np.array([row[h] for h in H_COLUMNS], dtype=float).reshape(3, 3) if row["status"] == "fitted" else None
+        raw[int(row["frame"])] = (H, int(row["n_inliers"]), row["reproj_error_px"])
+    missing = [int(f) for f in play["frame"].to_list() if int(f) not in raw]
+    if missing:
+        raise ValueError(f"rink_fits has no row for play frames {missing[:5]}")
     half = max(0, settings.smooth_window // 2)
     max_gap = round(settings.interpolate_gap_s * fps)
     rows: dict[int, dict] = {}
@@ -135,6 +151,17 @@ def fit_transforms(keypoints: pl.DataFrame, frames: pl.DataFrame, fps: float,
                     rows[f] = _row(clip_id, f, H / H[2, 2], 0, None, "interpolated")
     table = from_rows("rink_transforms", [rows[f] for f in sorted(rows)])
     return validate(table, "rink_transforms")
+
+
+def fit_transforms(keypoints: pl.DataFrame, frames: pl.DataFrame, fps: float,
+                   settings: RinkTransformSettings = DEFAULT_RINK_TRANSFORM) -> pl.DataFrame:
+    """Fit every frame, then smooth within the play segments of `frames`. Kept for callers that have both tables."""
+    frames = validate(frames, "frames")
+    if frames.height == 0:
+        return validate(from_rows("rink_transforms", []), "rink_transforms")
+    clip_id = str(frames["clip_id"][0])
+    n_frames = int(frames["frame"].max()) + 1
+    return smooth_transforms(fit_all(keypoints, clip_id, n_frames, settings), frames, fps, settings)
 
 
 def transforms_by_frame(table: pl.DataFrame) -> dict[int, tuple[np.ndarray, str]]:

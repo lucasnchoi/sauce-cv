@@ -100,6 +100,7 @@ SCHEMAS = {
     "keypoints": KEYPOINTS,
     "rink_keypoint_labels": RINK_KEYPOINT_LABELS,
     "rink_transforms": RINK_TRANSFORMS,
+    "rink_fits": RINK_TRANSFORMS,
 }
 
 # Columns that may never be null.
@@ -111,6 +112,7 @@ REQUIRED = {
     "keypoints": list(KEYPOINTS),
     "rink_keypoint_labels": ["clip_id", "frame", "keypoint_id", "visible"],
     "rink_transforms": ["clip_id", "frame", "n_inliers", "status"],
+    "rink_fits": ["clip_id", "frame", "n_inliers", "status"],
 }
 
 # Columns restricted to a fixed set of values. Nulls are checked by REQUIRED.
@@ -125,6 +127,7 @@ ALLOWED_VALUES = {
     "keypoints": {"keypoint_id": set(KEYPOINT_IDS)},
     "rink_keypoint_labels": {"keypoint_id": set(KEYPOINT_IDS)},
     "rink_transforms": {"status": {"fitted", "interpolated", "invalid"}},
+    "rink_fits": {"status": {"fitted", "invalid"}},
 }
 
 

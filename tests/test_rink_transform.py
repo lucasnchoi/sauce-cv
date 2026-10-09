@@ -121,3 +121,52 @@ def test_invalid_frames_never_get_a_guess_and_a_non_play_clip_is_empty():
     assert table.height == 0 and table.columns == list(SCHEMAS["rink_transforms"])
     lone = fit_transforms(keypoints_for({3: to_px(FEET[VISIBLE[:3]])}, ids=VISIBLE[:3]), frames_table(5, {3}), fps=10.0)
     assert lone["status"].to_list() == ["invalid"] and lone["n_inliers"].to_list() == [0]
+
+
+from tracker.stages.rink_transform import fit_all, smooth_transforms
+
+
+def test_fit_all_gives_every_frame_a_row_even_without_keypoints():
+    """Review Focus 5."""
+    good = to_px(FEET[VISIBLE])
+    table = fit_all(keypoints_for({1: good, 3: good}), "c", 5)
+    assert table.columns == list(SCHEMAS["rink_fits"])
+    assert table["frame"].to_list() == [0, 1, 2, 3, 4]
+    assert table["status"].to_list() == ["invalid", "fitted", "invalid", "fitted", "invalid"]
+    empty_rows = table.filter(pl.col("status") == "invalid")
+    assert empty_rows["n_inliers"].to_list() == [0, 0, 0] and all(empty_rows[h].null_count() == 3 for h in H_COLUMNS)
+    assert table.filter(pl.col("frame") == 1).row(0, named=True)["h22"] == 1.0
+    assert fit_all(from_rows("keypoints", []), "c", 3)["status"].to_list() == ["invalid"] * 3
+
+
+def test_fit_all_keeps_the_numbers_of_a_bad_fit():
+    few = to_px(FEET[VISIBLE[:3]])
+    table = fit_all(keypoints_for({0: few}, ids=VISIBLE[:3]), "c", 1)
+    assert table["status"].to_list() == ["invalid"] and table["n_inliers"].to_list() == [0]
+
+
+def test_smooth_transforms_reproduces_fit_transforms():
+    good = to_px(FEET[VISIBLE])
+    none = {k: None for k in range(20)}
+    pts = {**none, 2: good, 3: good, 4: good, 7: good, 8: good, 15: good, 16: good, 17: good}
+    frames = frames_table(20, set(range(2, 18)))
+    fits = fit_all(keypoints_for(pts), "c", 20)
+    assert fits.height == 20
+    composed = smooth_transforms(fits, frames, fps=10.0)
+    direct = fit_transforms(keypoints_for(pts), frames, fps=10.0)
+    assert composed.to_dicts() == direct.to_dicts()
+    assert composed["frame"].to_list() == list(range(2, 18))
+    status = dict(zip(composed["frame"], composed["status"]))
+    assert status[5] == "interpolated" and all(status[f] == "invalid" for f in range(9, 15))
+
+
+def test_smooth_transforms_needs_a_fit_row_for_every_play_frame():
+    fits = fit_all(keypoints_for({0: to_px(FEET[VISIBLE])}), "c", 3)
+    with pytest.raises(ValueError, match="play frames"):
+        smooth_transforms(fits, frames_table(5, {0, 1, 2, 3, 4}), fps=10.0)
+
+
+def test_smooth_transforms_on_no_play_frames_is_empty():
+    fits = fit_all(keypoints_for({0: to_px(FEET[VISIBLE])}), "c", 3)
+    table = smooth_transforms(fits, frames_table(3, set()), fps=10.0)
+    assert table.height == 0 and table.columns == list(SCHEMAS["rink_transforms"])

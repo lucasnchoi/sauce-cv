@@ -105,3 +105,14 @@ def test_rink_transforms_table_restricts_status_and_allows_null_h():
     assert validate(from_rows("rink_transforms", [row]), "rink_transforms").height == 1
     with pytest.raises(SchemaError, match="status"):
         validate(from_rows("rink_transforms", [{**row, "status": "guessed"}]), "rink_transforms")
+
+
+def test_rink_fits_shares_the_transform_columns_and_allows_only_fitted_or_invalid():
+    from tracker.schemas import ALLOWED_VALUES, REQUIRED, SCHEMAS, SchemaError, from_rows, validate
+    assert SCHEMAS["rink_fits"] == SCHEMAS["rink_transforms"]
+    assert REQUIRED["rink_fits"] == REQUIRED["rink_transforms"]
+    assert ALLOWED_VALUES["rink_fits"]["status"] == {"fitted", "invalid"}
+    row = {"clip_id": "c", "frame": 0, **{h: None for h in SCHEMAS["rink_fits"] if h.startswith("h")},
+           "n_inliers": 0, "reproj_error_px": None, "status": "interpolated"}
+    with pytest.raises(SchemaError):
+        validate(from_rows("rink_fits", [row]), "rink_fits")
