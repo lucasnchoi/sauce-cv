@@ -12,7 +12,7 @@ From `data/runs/plan2c-train-*/scorecard.md` (tracking over the 11 training clip
 
 | Mode | Play share (pooled) | IDF1 | Precision | Recall | Rink median | Valid share |
 |---|---|---|---|---|---|---|
-| transform, defaults (bridge 0.5 s, min segment 1.0 s) | 95.0% | 65.1% | 90.5% | 79.1% | 0.09 m | 100.0% |
+| transform, Plan 2's bridge 0.5 s, min segment 1.0 s | 95.0% | 65.1% | 90.5% | 79.1% | 0.09 m | 100.0% |
 | keypoints (Plan 2 rule) | 85.5% | 59.8% | 90.6% | 73.0% | 0.10 m | 99.1% |
 | passthrough (Plan 1) | 100% | 70.5% | 90.5% | 82.9% | 0.09 m | 95.3% |
 | transform, bridge 1.0 s | 98.4% | 69.3% | 90.5% | 82.0% | 0.09 m | 96.8% |
