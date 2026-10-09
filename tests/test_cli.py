@@ -447,3 +447,32 @@ def test_run_records_the_footage_filter_mode(dataset, tmp_path):
     recorded = json.loads((tmp_path / "run" / "run.json").read_text())["run"]
     assert recorded["footage_filter"] == {"mode": "passthrough", "settings": None}     # no rink weights: nothing to filter on
     assert recorded["detector_frames"] == "all"
+
+
+def test_refilter_command_writes_a_new_run(dataset, tmp_path, capsys):
+    src = tmp_path / "src"
+    clip = dataset / "mot-challenge-format" / "train" / "A_001"
+    main(["run", "--out", str(src), "--clip", str(clip), "--no-overlay"], make_detector=fake_detector)
+    code = main(["refilter", "--run", str(src), "--out", str(tmp_path / "out"), "--footage-filter", "passthrough",
+                 "--set", "minimum_consecutive_frames=1"])
+    assert code == 0
+    assert (tmp_path / "out" / "A_001" / "tracks.parquet").exists()
+    out = capsys.readouterr().out
+    assert "A_001: ok" in out and "footage filter: passthrough" in out
+    recorded = json.loads((tmp_path / "out" / "run.json").read_text())["run"]
+    assert recorded["footage_filter"]["mode"] == "passthrough"
+    assert recorded["tracker"]["settings"]["minimum_consecutive_frames"] == 1
+    assert recorded["refiltered_from"] == str(src)
+
+
+def test_refilter_command_refuses_a_missing_run_and_an_old_cache(dataset, tmp_path, capsys):
+    assert main(["refilter", "--run", str(tmp_path / "nope"), "--out", str(tmp_path / "out")]) == 2
+    src = tmp_path / "src"
+    clip = dataset / "mot-challenge-format" / "train" / "A_001"
+    main(["run", "--out", str(src), "--clip", str(clip), "--no-overlay"], make_detector=fake_detector)
+    run_file = src / "run.json"
+    stale = json.loads(run_file.read_text())
+    stale["run"].pop("detector_frames")
+    run_file.write_text(json.dumps(stale))
+    assert main(["refilter", "--run", str(src), "--out", str(tmp_path / "out"), "--footage-filter", "passthrough"]) == 2
+    assert "every frame" in capsys.readouterr().err

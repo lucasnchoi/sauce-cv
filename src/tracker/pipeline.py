@@ -23,7 +23,7 @@ from tracker.overlay import render_overlay
 from tracker.stages.assemble import assemble_tracking
 from tracker.stages.detect_track import DEFAULT_BYTETRACK, ByteTrackSettings, bytetrack_factory, run_detect, run_track
 from tracker.schemas import empty
-from tracker.stages.footage_filter import DEFAULT_FOOTAGE_FILTER, FootageFilterSettings, frames_for, passthrough_frames, recorded_settings
+from tracker.stages.footage_filter import DEFAULT_FOOTAGE_FILTER, MODES, FootageFilterSettings, frames_for, passthrough_frames, recorded_settings
 from tracker.stages.rink_keypoints import run_keypoints
 from tracker.stages.rink_transform import DEFAULT_RINK_TRANSFORM, RinkTransformSettings, fit_all, smooth_transforms
 from tracker.tables import read_table, write_table
@@ -213,6 +213,73 @@ def retrack_run(src_run, out_run, settings: ByteTrackSettings) -> dict[str, str 
                           "settings": settings.as_dict(), "frame_rate": "set per clip"}
     details["retracked_from"] = str(src_run)
     details["retracked_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    out_run.mkdir(parents=True, exist_ok=True)
+    (out_run / "run.json").write_text(json.dumps({"run": details, "clips": results}, indent=2) + "\n")
+    return results
+
+
+def refilter_run(src_run, out_run, mode: str, footage: FootageFilterSettings, rink_settings: RinkTransformSettings,
+                 tracker_settings: ByteTrackSettings, tracker_factory=None) -> dict[str, str | None]:
+    """Re-run the footage filter, the transform smoothing, tracking and positions from a finished run's cache.
+
+    Reads keypoints, raw rink fits and detections; no model is loaded and no
+    overlay is written. The source must have been detected on every frame
+    (run.json: detector_frames "all"), or the re-filtered play frames could
+    lack detections.
+    """
+    src_run, out_run = Path(src_run), Path(out_run)
+    if src_run.resolve() == out_run.resolve():
+        raise ValueError(f"refilter output is the same folder as its source: {src_run}")
+    if mode not in MODES:
+        raise ValueError(f"unknown footage filter mode '{mode}'; use one of {MODES}")
+    source_file = src_run / "run.json"
+    try:
+        details = json.loads(source_file.read_text())["run"] if source_file.is_file() else {}
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ValueError(f"cannot read {source_file}: {error}") from error
+    if details.get("detector_frames") != "all":
+        raise ValueError(f"{src_run} was not detected on every frame (run.json has no detector_frames: all); "
+                         "run it again before refiltering")
+    factory = tracker_factory if tracker_factory is not None else tracker_settings.factory()
+    results: dict[str, str | None] = {}
+    for clip_dir in sorted(p for p in src_run.iterdir() if p.is_dir()):
+        clip_id = clip_dir.name
+        out = out_run / clip_id
+        try:
+            with _stage("read cached run", clip_id):
+                info = read_clip_info(clip_dir / "clip.json")
+                detections = read_table("detections", clip_dir / "detections.parquet")
+                fits_file, keypoints_file = clip_dir / "rink_fits.parquet", clip_dir / "keypoints.parquet"
+                fits = read_table("rink_fits", fits_file) if fits_file.is_file() else None
+                keypoints = read_table("keypoints", keypoints_file) if keypoints_file.is_file() else None
+                if fits is None and mode != "passthrough":
+                    raise FileNotFoundError(f"{fits_file} is missing: no raw rink fits to refilter from")
+                write_clip_info(info, out / "clip.json")
+                for name in ("keypoints.parquet", "rink_fits.parquet", "detections.parquet"):
+                    if (clip_dir / name).is_file():
+                        shutil.copyfile(clip_dir / name, out / name)
+            with _stage("footage filter", clip_id):
+                frames = passthrough_frames(info) if fits is None else frames_for(mode, info, footage, fits=fits, keypoints=keypoints)
+                write_table(frames, "frames", out / "frames.parquet")
+            with _stage("rink transform", clip_id):
+                transforms = smooth_transforms(fits, frames, info.fps, rink_settings) if fits is not None else empty("rink_transforms")
+                write_table(transforms, "rink_transforms", out / "rink_transforms.parquet")
+            with _stage("track", clip_id):
+                tracks = run_track(detections, frames, info.fps, factory)
+                write_table(tracks, "tracks", out / "tracks.parquet")
+            with _stage("assemble", clip_id):
+                write_table(assemble_tracking(tracks, frames, transforms), "tracking", out / "tracking.parquet")
+            results[clip_id] = None
+        except StageError as error:
+            results[clip_id] = str(error)
+
+    earlier = details.get("tracker")
+    details["tracker"] = {**(earlier if isinstance(earlier, dict) else {}), "name": "bytetrack", "library": "trackers",
+                          "settings": tracker_settings.as_dict(), "frame_rate": "set per clip"}
+    details["footage_filter"] = {"mode": mode, "settings": recorded_settings(mode, footage)}
+    details["rink_transform"] = rink_settings.as_dict()
+    details["refiltered_from"] = str(src_run)
+    details["refiltered_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     out_run.mkdir(parents=True, exist_ok=True)
     (out_run / "run.json").write_text(json.dumps({"run": details, "clips": results}, indent=2) + "\n")
     return results

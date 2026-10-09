@@ -17,7 +17,7 @@ from tracker.labels.rink_keypoints import build_frame_list, interleave_frames, l
 from tracker.labels.session import LabelSession
 from tracker.labels.tool import render_current, run_tool
 from tracker.evaluate.scorecard import build_scorecard, read_fps_by_clip, write_scorecard
-from tracker.pipeline import RinkStages, read_clip_info, retrack_run, run_details, run_many, score_rink_run, score_run
+from tracker.pipeline import RinkStages, read_clip_info, refilter_run, retrack_run, run_details, run_many, score_rink_run, score_run
 from tracker.stages.detect_track import ByteTrackSettings
 from tracker.stages.footage_filter import MODES, FootageFilterSettings
 from tracker.stages.rink_transform import RinkTransformSettings
@@ -57,6 +57,13 @@ def _parser() -> argparse.ArgumentParser:
     retrack.add_argument("--run", type=Path, required=True, help="a run that holds detections.parquet per clip")
     retrack.add_argument("--out", type=Path, required=True)
     retrack.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
+
+    refilter = commands.add_parser("refilter", help="re-run the footage filter, rink transform, tracking and positions from a finished run's cache")
+    refilter.add_argument("--run", type=Path, required=True, help="a run detected on every frame (Plan 2c or later)")
+    refilter.add_argument("--out", type=Path, required=True)
+    refilter.add_argument("--footage-filter", choices=list(MODES), default="transform")
+    refilter.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                          help="a setting: ByteTrack KEY=VALUE, or footage.KEY=VALUE / rink.KEY=VALUE (repeatable); defaults are the project's, not the source run's")
 
     score = commands.add_parser("score", help="score a finished run against ground truth")
     score.add_argument("--run", type=Path, required=True)
@@ -230,6 +237,23 @@ def _retrack(args) -> int:
     for clip, error in results.items():
         print(f"{clip}: {'ok' if error is None else 'FAILED: ' + error}")
     print(f"tracker settings: {settings.label()}; see {args.out / 'run.json'}")
+    return 1 if any(error is not None for error in results.values()) else 0
+
+
+def _refilter(args) -> int:
+    try:
+        tracker_settings, footage, rink_settings = _settings(args.set)
+    except ValueError as error:
+        return _usage_error(str(error))
+    if not args.run.is_dir():
+        return _usage_error(f"run folder not found: {args.run}")
+    try:
+        results = refilter_run(args.run, args.out, args.footage_filter, footage, rink_settings, tracker_settings)
+    except ValueError as error:
+        return _usage_error(str(error))
+    for clip, error in results.items():
+        print(f"{clip}: {'ok' if error is None else 'FAILED: ' + error}")
+    print(f"footage filter: {args.footage_filter}; tracker settings: {tracker_settings.label()}; see {args.out / 'run.json'}")
     return 1 if any(error is not None for error in results.values()) else 0
 
 
@@ -507,6 +531,8 @@ def main(argv: list[str] | None = None, make_detector=None) -> int:
         return _run(args, make_detector)
     if args.command == "retrack":
         return _retrack(args)
+    if args.command == "refilter":
+        return _refilter(args)
     if args.command == "diagnose-boxes":
         return _diagnose(args)
     if args.command == "grid":

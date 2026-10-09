@@ -341,3 +341,66 @@ def test_transform_mode_calls_a_frame_play_only_when_its_fit_is_valid(make_seque
     assert read_table("detections", out / "detections.parquet")["frame"].to_list() == [0, 1, 2]
     assert read_table("tracks", out / "tracks.parquet")["frame"].to_list() == [0, 1]
     assert read_table("tracking", out / "tracking.parquet")["position_status"].to_list() == ["observed", "observed"]
+
+
+from tracker.pipeline import refilter_run
+from tracker.stages.rink_transform import RinkTransformSettings
+
+
+def _source_run(make_sequence, tmp_path, detector_frames="all", keypoints=GOOD_POINTS, per_frame=None):
+    seq = make_sequence(name="GAME_A_001", n_frames=4)
+    rink = RinkStages(make_keypoint_detector=lambda: FakeKeypointDetector(keypoints, per_frame=per_frame),
+                      footage_filter=FootageFilterSettings(min_segment_s=0.0, bridge_gap_s=0.0))
+    run_clip(seq, tmp_path / "src", FakeDetector([BOX]), FakeTrackerFactory(), overlay=False, rink=rink)
+    details = run_details(FakeDetector([BOX]), rink=rink)
+    if detector_frames is None:
+        details.pop("detector_frames")
+    (tmp_path / "src" / "run.json").write_text(json.dumps({"run": details, "clips": {"GAME_A_001": None}}))
+    return tmp_path / "src"
+
+
+def test_refilter_reproduces_a_fresh_run_under_the_same_settings(make_sequence, tmp_path):
+    src = _source_run(make_sequence, tmp_path, per_frame={2: {10: (5.0, 5.0, 0.9)}})
+    results = refilter_run(src, tmp_path / "out", "transform", FootageFilterSettings(min_segment_s=0.0, bridge_gap_s=0.0),
+                           RinkTransformSettings(), ByteTrackSettings(), tracker_factory=FakeTrackerFactory())
+    assert results == {"GAME_A_001": None}
+    for table in ("frames", "rink_transforms", "tracks", "tracking", "detections", "rink_fits", "keypoints"):
+        before = read_table(table, src / "GAME_A_001" / f"{table}.parquet").to_dicts()
+        after = read_table(table, tmp_path / "out" / "GAME_A_001" / f"{table}.parquet").to_dicts()
+        assert before == after, table
+    assert read_table("frames", tmp_path / "out" / "GAME_A_001" / "frames.parquet")["is_play"].to_list() == [True, True, False, True]
+    recorded = json.loads((tmp_path / "out" / "run.json").read_text())["run"]
+    assert recorded["refiltered_from"] == str(src) and "refiltered_at" in recorded
+    assert recorded["footage_filter"] == {"mode": "transform", "settings": {"bridge_gap_s": 0.0, "min_segment_s": 0.0}}
+    assert recorded["detector"] == "fake-detector" and recorded["detector_frames"] == "all"
+
+
+def test_refilter_can_change_the_mode_and_the_tracks_follow(make_sequence, tmp_path):
+    src = _source_run(make_sequence, tmp_path, per_frame={2: {10: (5.0, 5.0, 0.9)}})
+    refilter_run(src, tmp_path / "out", "passthrough", FootageFilterSettings(), RinkTransformSettings(), ByteTrackSettings(),
+                 tracker_factory=FakeTrackerFactory())
+    out = tmp_path / "out" / "GAME_A_001"
+    assert read_table("frames", out / "frames.parquet")["is_play"].all()
+    assert read_table("tracks", out / "tracks.parquet")["frame"].to_list() == [0, 1, 2, 3]        # frame 2 is back, from the cache
+    assert read_table("rink_transforms", out / "rink_transforms.parquet")["status"].to_list() == ["fitted", "fitted", "interpolated", "fitted"]   # one bad frame inside play is interpolated
+    assert json.loads((tmp_path / "out" / "run.json").read_text())["run"]["footage_filter"] == {"mode": "passthrough", "settings": None}
+
+
+def test_refilter_refuses_a_run_detected_on_play_frames_only(make_sequence, tmp_path):
+    """Review Focus 4."""
+    src = _source_run(make_sequence, tmp_path, detector_frames=None)
+    with pytest.raises(ValueError, match="every frame"):
+        refilter_run(src, tmp_path / "out", "transform", FootageFilterSettings(), RinkTransformSettings(), ByteTrackSettings())
+    assert not (tmp_path / "out").exists()
+
+
+def test_refilter_names_a_clip_without_rink_fits_and_refuses_its_own_source(make_sequence, tmp_path):
+    src = _source_run(make_sequence, tmp_path)
+    (src / "GAME_A_001" / "rink_fits.parquet").unlink()
+    results = refilter_run(src, tmp_path / "out", "transform", FootageFilterSettings(), RinkTransformSettings(), ByteTrackSettings(),
+                           tracker_factory=FakeTrackerFactory())
+    assert "rink_fits.parquet" in results["GAME_A_001"] and "read cached run" in results["GAME_A_001"]
+    with pytest.raises(ValueError, match="same folder"):
+        refilter_run(src, src, "transform", FootageFilterSettings(), RinkTransformSettings(), ByteTrackSettings())
+    with pytest.raises(ValueError, match="mode"):
+        refilter_run(src, tmp_path / "out2", "magic", FootageFilterSettings(), RinkTransformSettings(), ByteTrackSettings())
